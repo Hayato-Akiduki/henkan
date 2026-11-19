@@ -1,0 +1,152 @@
+use super::{ConvertError, TargetFormat};
+use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+use std::path::Path;
+
+const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "gif", "bmp", "ico", "tif", "tiff",
+];
+
+pub fn is_supported_extension(ext: &str) -> bool {
+    SUPPORTED_EXTENSIONS.contains(&ext)
+}
+
+pub fn available_targets(input_ext: &str) -> Vec<TargetFormat> {
+    let normalized = match input_ext {
+        "jpeg" => "jpg",
+        "tif" => "tiff",
+        other => other,
+    };
+
+    let all = vec![
+        TargetFormat {
+            id: "png".to_string(),
+            label: "PNG".to_string(),
+            extension: "png".to_string(),
+            category: "image".to_string(),
+            description: "可逆圧縮・透過対応".to_string(),
+        },
+        TargetFormat {
+            id: "jpg".to_string(),
+            label: "JPEG".to_string(),
+            extension: "jpg".to_string(),
+            category: "image".to_string(),
+            description: "写真向け・軽量".to_string(),
+        },
+        TargetFormat {
+            id: "webp".to_string(),
+            label: "WebP".to_string(),
+            extension: "webp".to_string(),
+            category: "image".to_string(),
+            description: "Web向け・高圧縮".to_string(),
+        },
+        TargetFormat {
+            id: "gif".to_string(),
+            label: "GIF".to_string(),
+            extension: "gif".to_string(),
+            category: "image".to_string(),
+            description: "256色・互換性高".to_string(),
+        },
+        TargetFormat {
+            id: "bmp".to_string(),
+            label: "BMP".to_string(),
+            extension: "bmp".to_string(),
+            category: "image".to_string(),
+            description: "無圧縮ビットマップ".to_string(),
+        },
+        TargetFormat {
+            id: "ico".to_string(),
+            label: "ICO".to_string(),
+            extension: "ico".to_string(),
+            category: "image".to_string(),
+            description: "アイコン（最大256px）".to_string(),
+        },
+        TargetFormat {
+            id: "tiff".to_string(),
+            label: "TIFF".to_string(),
+            extension: "tiff".to_string(),
+            category: "image".to_string(),
+            description: "印刷・高画質向け".to_string(),
+        },
+    ];
+
+    all.into_iter().filter(|t| t.id != normalized).collect()
+}
+
+/// 透過部分を白背景に合成して RGB8 に変換（JPEG 出力時に黒背景になるのを防ぐ）
+fn flatten_to_white_rgb8(img: &DynamicImage) -> DynamicImage {
+    let rgba: RgbaImage = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut out = image::RgbImage::new(w, h);
+
+    for (x, y, Rgba([r, g, b, a])) in rgba.enumerate_pixels() {
+        let alpha = *a as f32 / 255.0;
+        let inv = 1.0 - alpha;
+        let nr = (*r as f32 * alpha + 255.0 * inv).round() as u8;
+        let ng = (*g as f32 * alpha + 255.0 * inv).round() as u8;
+        let nb = (*b as f32 * alpha + 255.0 * inv).round() as u8;
+        out.put_pixel(x, y, image::Rgb([nr, ng, nb]));
+    }
+
+    DynamicImage::ImageRgb8(out)
+}
+
+pub fn convert_image(
+    input_path: &Path,
+    output_path: &Path,
+    target_format: &str,
+) -> Result<(), ConvertError> {
+    let img = image::open(input_path)
+        .map_err(|e| ConvertError::ConversionFailed(format!("画像の読み込みに失敗: {e}")))?;
+
+    let (processed, fmt) = match target_format {
+        "png" => (img, ImageFormat::Png),
+        "jpg" | "jpeg" => (flatten_to_white_rgb8(&img), ImageFormat::Jpeg),
+        "webp" => (img, ImageFormat::WebP),
+        "gif" => (img, ImageFormat::Gif),
+        "bmp" => (flatten_to_white_rgb8(&img), ImageFormat::Bmp),
+        "ico" => {
+            let resized = if img.width() > 256 || img.height() > 256 {
+                img.thumbnail(256, 256)
+            } else {
+                img
+            };
+            (resized, ImageFormat::Ico)
+        }
+        "tiff" | "tif" => (img, ImageFormat::Tiff),
+        other => return Err(ConvertError::UnsupportedTarget(other.to_string())),
+    };
+
+    processed
+        .save_with_format(output_path, fmt)
+        .map_err(|e| ConvertError::ConversionFailed(format!("画像の保存に失敗: {e}")))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_png_to_jpg_and_ico() {
+        let dir = std::env::temp_dir().join("henkan_test_img");
+        let _ = fs::create_dir_all(&dir);
+        let src = dir.join("sample.png");
+        let dst_jpg = dir.join("sample.jpg");
+        let dst_ico = dir.join("sample.ico");
+
+        let img = DynamicImage::ImageRgba8(RgbaImage::from_pixel(300, 200, Rgba([50, 120, 220, 128])));
+        img.save_with_format(&src, ImageFormat::Png).unwrap();
+
+        convert_image(&src, &dst_jpg, "jpg").unwrap();
+        assert!(dst_jpg.exists());
+
+        convert_image(&src, &dst_ico, "ico").unwrap();
+        assert!(dst_ico.exists());
+        let loaded_ico = image::open(&dst_ico).unwrap();
+        assert!(loaded_ico.width() <= 256 && loaded_ico.height() <= 256);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
