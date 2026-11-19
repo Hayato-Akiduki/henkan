@@ -238,4 +238,30 @@ mod tests {
         assert!(md_targets.iter().any(|t| t.id == "docx"));
         assert!(!md_targets.iter().any(|t| t.id == "md"));
     }
+
+    #[test]
+    fn test_pandoc_real_conversion_if_available() {
+        use super::super::tools::detect_tool;
+
+        if !detect_tool(None, "pandoc", "--version").available {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join("henkan_test_pandoc");
+        let _ = fs::create_dir_all(&dir);
+        let src_md = dir.join("sample.md");
+        let dst_docx = dir.join("sample.docx");
+        let dst_back_md = dir.join("sample_back.md");
+
+        fs::write(&src_md, "# テスト文書\n\nHenkan での Pandoc 変換テストです。\n").unwrap();
+
+        convert_document(&src_md, &dst_docx, "md", "docx", None).unwrap();
+        assert!(dst_docx.exists() && fs::metadata(&dst_docx).unwrap().len() > 0);
+
+        convert_document(&dst_docx, &dst_back_md, "docx", "md", None).unwrap();
+        let back_text = fs::read_to_string(&dst_back_md).unwrap();
+        assert!(back_text.contains("テスト文書"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

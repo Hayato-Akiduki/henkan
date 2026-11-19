@@ -225,4 +225,56 @@ mod tests {
         assert!(mp4_targets.iter().any(|t| t.id == "mp3"));
         assert!(mp4_targets.iter().any(|t| t.id == "gif"));
     }
+
+    #[test]
+    fn test_ffmpeg_real_conversion_if_available() {
+        use super::super::tools::detect_tool;
+        use std::fs;
+
+        if !detect_tool(None, "ffmpeg", "-version").available {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join("henkan_test_ffmpeg");
+        let _ = fs::create_dir_all(&dir);
+        let src_mp4 = dir.join("sample.mp4");
+        let dst_gif = dir.join("sample.gif");
+        let dst_mp3 = dir.join("sample.mp3");
+        let dst_wav = dir.join("sample.wav");
+
+        // 1秒のカラーバー動画＋サイン波音声をテスト素材として生成
+        let generated = new_hidden_command("ffmpeg")
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=160x120:rate=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&src_mp4)
+            .output()
+            .unwrap();
+        assert!(generated.status.success(), "テスト用 MP4 生成に失敗");
+
+        convert_media(&src_mp4, &dst_gif, "gif", None).unwrap();
+        assert!(dst_gif.exists() && fs::metadata(&dst_gif).unwrap().len() > 0);
+
+        convert_media(&src_mp4, &dst_mp3, "mp3", None).unwrap();
+        assert!(dst_mp3.exists() && fs::metadata(&dst_mp3).unwrap().len() > 0);
+
+        convert_media(&dst_mp3, &dst_wav, "wav", None).unwrap();
+        assert!(dst_wav.exists() && fs::metadata(&dst_wav).unwrap().len() > 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
