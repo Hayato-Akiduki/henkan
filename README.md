@@ -7,7 +7,7 @@
 
 - [x] **Step 1**: Tauri v2 プロジェクトの初期構築
 - [x] **Step 2**: 基本 UI（ドラッグ＆ドロップ / 変換キュー）＋ 画像変換・データ／テキスト変換・Markdown 変換
-- [ ] **Step 3**: 動画・音声変換（FFmpeg 連携）＋ 文書・PDF 変換（Markdown / Pandoc 連携）
+- [x] **Step 3**: 動画・音声変換（FFmpeg 連携）＋ 文書・PDF 変換（Markdown / Pandoc 連携）
 - [ ] **Step 4**: インストーラー生成・自動アップデート（Tauri Updater + GitHub Actions）
 
 ## 技術スタック

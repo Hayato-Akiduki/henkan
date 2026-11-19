@@ -1,5 +1,6 @@
 mod converter;
 
+use converter::tools::ToolsOverview;
 use converter::{ConvertRequest, ConvertResult, FileInspectResult};
 use tauri_plugin_opener::OpenerExt;
 
@@ -22,6 +23,18 @@ async fn convert_file(request: ConvertRequest) -> Result<ConvertResult, String> 
 }
 
 #[tauri::command]
+async fn check_external_tools(
+    ffmpeg_path: Option<String>,
+    pandoc_path: Option<String>,
+) -> Result<ToolsOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        converter::tools::check_all_tools(ffmpeg_path.as_deref(), pandoc_path.as_deref())
+    })
+    .await
+    .map_err(|e| format!("外部ツールの確認に失敗しました: {e}"))
+}
+
+#[tauri::command]
 fn reveal_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     app.opener()
         .reveal_item_in_dir(&path)
@@ -36,6 +49,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             inspect_files,
             convert_file,
+            check_external_tools,
             reveal_file
         ])
         .run(tauri::generate_context!())

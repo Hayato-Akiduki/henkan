@@ -78,19 +78,122 @@ body,
   color: var(--text-muted);
 }
 
-.supported-chips {
+.header-right {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
-.chip {
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: 999px;
+.btn-tool-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+.btn-tool-toggle:hover,
+.btn-tool-toggle.active {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.toggle-caret {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.dot-ok {
+  background: var(--success);
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.55);
+}
+
+.dot-warn {
+  background: #f59e0b;
+}
+
+.tools-panel {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tools-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tools-panel-title {
+  font-size: 12px;
+  font-weight: 600;
   color: var(--text-muted);
+}
+
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.tool-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.tool-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-name-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.tool-role {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tool-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-sm {
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+.tool-detail {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
 }
 
 .app-main {
@@ -333,6 +436,16 @@ body,
 .badge-image {
   background: rgba(56, 189, 248, 0.16);
   color: #7dd3fc;
+}
+
+.badge-video {
+  background: rgba(244, 114, 182, 0.18);
+  color: #f9a8d4;
+}
+
+.badge-audio {
+  background: rgba(251, 146, 60, 0.18);
+  color: #fdba74;
 }
 
 .badge-data {

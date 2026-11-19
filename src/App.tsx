@@ -6,11 +6,17 @@ import type {
   ConvertResult,
   FileInspectResult,
   QueueItem,
+  ToolsOverview,
 } from "./types";
 import "./App.css";
 
+const STORAGE_FFMPEG_PATH = "henkan.ffmpegPath";
+const STORAGE_PANDOC_PATH = "henkan.pandocPath";
+
 const CATEGORY_LABELS: Record<string, { label: string; className: string }> = {
   image: { label: "画像", className: "badge-image" },
+  video: { label: "動画", className: "badge-video" },
+  audio: { label: "音声", className: "badge-audio" },
   data: { label: "データ", className: "badge-data" },
   text: { label: "テキスト", className: "badge-text" },
   document: { label: "文書", className: "badge-doc" },
@@ -29,6 +35,65 @@ export function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isConvertingAll, setIsConvertingAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+
+  const [showToolsPanel, setShowToolsPanel] = useState(false);
+  const [ffmpegPath, setFfmpegPath] = useState<string>(
+    () => localStorage.getItem(STORAGE_FFMPEG_PATH) ?? ""
+  );
+  const [pandocPath, setPandocPath] = useState<string>(
+    () => localStorage.getItem(STORAGE_PANDOC_PATH) ?? ""
+  );
+  const [tools, setTools] = useState<ToolsOverview | null>(null);
+  const [isCheckingTools, setIsCheckingTools] = useState(false);
+
+  const refreshTools = useCallback(async (ffPath: string, pdPath: string) => {
+    setIsCheckingTools(true);
+    try {
+      const overview = await invoke<ToolsOverview>("check_external_tools", {
+        ffmpegPath: ffPath || null,
+        pandocPath: pdPath || null,
+      });
+      setTools(overview);
+    } catch {
+      // ブラウザプレビュー時など Tauri 環境外では無視
+    } finally {
+      setIsCheckingTools(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshTools(ffmpegPath, pandocPath);
+  }, [ffmpegPath, pandocPath, refreshTools]);
+
+  const handleSelectToolBinary = async (tool: "ffmpeg" | "pandoc") => {
+    try {
+      const selected = await open({
+        multiple: false,
+        title: `${tool === "ffmpeg" ? "FFmpeg" : "Pandoc"} 実行ファイルを選択`,
+      });
+      if (typeof selected !== "string") return;
+
+      if (tool === "ffmpeg") {
+        setFfmpegPath(selected);
+        localStorage.setItem(STORAGE_FFMPEG_PATH, selected);
+      } else {
+        setPandocPath(selected);
+        localStorage.setItem(STORAGE_PANDOC_PATH, selected);
+      }
+    } catch (err) {
+      setNotice(`ファイル選択を開けませんでした: ${String(err)}`);
+    }
+  };
+
+  const handleResetToolBinary = (tool: "ffmpeg" | "pandoc") => {
+    if (tool === "ffmpeg") {
+      setFfmpegPath("");
+      localStorage.removeItem(STORAGE_FFMPEG_PATH);
+    } else {
+      setPandocPath("");
+      localStorage.removeItem(STORAGE_PANDOC_PATH);
+    }
+  };
 
   const addFilePaths = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return;
@@ -163,6 +228,8 @@ export function App() {
           inputPath: item.file.path,
           targetFormat: item.targetFormat,
           outputDir: outputDir || null,
+          ffmpegPath: ffmpegPath || null,
+          pandocPath: pandocPath || null,
         },
       });
 
@@ -235,12 +302,126 @@ export function App() {
             <p className="subtitle">マルチフォーマット・ファイル変換ツール</p>
           </div>
         </div>
-        <div className="supported-chips">
-          <span className="chip">画像 (PNG/JPG/WebP/ICO...)</span>
-          <span className="chip">データ (JSON/YAML/TOML/CSV)</span>
-          <span className="chip">文字コード / Markdown</span>
+
+        <div className="header-right">
+          <button
+            className={`btn btn-tool-toggle ${showToolsPanel ? "active" : ""}`}
+            onClick={() => setShowToolsPanel((v) => !v)}
+            type="button"
+          >
+            <span
+              className={`status-dot ${
+                tools?.ffmpeg.available ? "dot-ok" : "dot-warn"
+              }`}
+              title={tools?.ffmpeg.available ? "FFmpeg 利用可能" : "FFmpeg 未検出"}
+            />
+            <span>FFmpeg</span>
+            <span
+              className={`status-dot ${
+                tools?.pandoc.available ? "dot-ok" : "dot-warn"
+              }`}
+              title={tools?.pandoc.available ? "Pandoc 利用可能" : "Pandoc 未検出"}
+            />
+            <span>Pandoc</span>
+            <span className="toggle-caret">{showToolsPanel ? "▲" : "▼"}</span>
+          </button>
         </div>
       </header>
+
+      {/* 外部ツール設定パネル */}
+      {showToolsPanel && (
+        <section className="tools-panel">
+          <div className="tools-panel-header">
+            <span className="tools-panel-title">
+              外部変換エンジン設定（動画・音声 / 文書変換で使用）
+            </span>
+            <button
+              className="btn btn-secondary"
+              onClick={() => refreshTools(ffmpegPath, pandocPath)}
+              disabled={isCheckingTools}
+              type="button"
+            >
+              {isCheckingTools ? "確認中..." : "再チェック"}
+            </button>
+          </div>
+
+          <div className="tools-grid">
+            <div className="tool-card">
+              <div className="tool-card-top">
+                <div className="tool-name-row">
+                  <span
+                    className={`status-dot ${
+                      tools?.ffmpeg.available ? "dot-ok" : "dot-warn"
+                    }`}
+                  />
+                  <strong>FFmpeg</strong>
+                  <span className="tool-role">動画・音声変換</span>
+                </div>
+                <div className="tool-card-actions">
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleSelectToolBinary("ffmpeg")}
+                    type="button"
+                  >
+                    実行ファイル指定
+                  </button>
+                  {ffmpegPath && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleResetToolBinary("ffmpeg")}
+                      type="button"
+                    >
+                      自動に戻す
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="tool-detail">
+                {tools?.ffmpeg.available
+                  ? tools.ffmpeg.version ?? "検出済み"
+                  : "未検出（Windows: winget install Gyan.FFmpeg / macOS: brew install ffmpeg）"}
+              </p>
+            </div>
+
+            <div className="tool-card">
+              <div className="tool-card-top">
+                <div className="tool-name-row">
+                  <span
+                    className={`status-dot ${
+                      tools?.pandoc.available ? "dot-ok" : "dot-warn"
+                    }`}
+                  />
+                  <strong>Pandoc</strong>
+                  <span className="tool-role">DOCX / EPUB / PDF 変換</span>
+                </div>
+                <div className="tool-card-actions">
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => handleSelectToolBinary("pandoc")}
+                    type="button"
+                  >
+                    実行ファイル指定
+                  </button>
+                  {pandocPath && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleResetToolBinary("pandoc")}
+                      type="button"
+                    >
+                      自動に戻す
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="tool-detail">
+                {tools?.pandoc.available
+                  ? tools.pandoc.version ?? "検出済み"
+                  : "未検出（Windows: winget install JohnMacFarlane.Pandoc / macOS: brew install pandoc）"}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       <main className="app-main">
         {/* ドロップゾーン */}
@@ -260,7 +441,7 @@ export function App() {
               : "ファイルをここにドラッグ＆ドロップ"}
           </p>
           <p className="dropzone-sub">
-            またはクリックしてファイルを選択（複数選択OK）
+            画像・動画・音声・JSON/YAML/TOML/CSV・テキスト・Markdown/Word など（複数選択OK）
           </p>
         </section>
 
@@ -281,7 +462,10 @@ export function App() {
         <section className="toolbar">
           <div className="output-dir-box">
             <span className="output-label">出力先:</span>
-            <span className="output-path" title={outputDir || "元のファイルと同じフォルダ"}>
+            <span
+              className="output-path"
+              title={outputDir || "元のファイルと同じフォルダ"}
+            >
               {outputDir || "元のファイルと同じフォルダ"}
             </span>
             <button
@@ -329,9 +513,7 @@ export function App() {
               disabled={pendingCount === 0 || isConvertingAll}
               type="button"
             >
-              {isConvertingAll
-                ? "変換中..."
-                : `すべて変換 (${pendingCount})`}
+              {isConvertingAll ? "変換中..." : `すべて変換 (${pendingCount})`}
             </button>
           </div>
         </section>
@@ -342,7 +524,7 @@ export function App() {
             <div className="empty-state">
               <p>まだファイルが追加されていません。</p>
               <p className="empty-hint">
-                画像（PNG/JPG/WebP 等）、データ（JSON/YAML/TOML/CSV）、テキスト、Markdown ファイルをドロップしてみてください。
+                画像（PNG/JPG/WebP 等）、動画・音声（MP4/MP3/WAV 等）、データ（JSON/YAML/TOML/CSV）、文書（Markdown/DOCX/HTML 等）をドロップしてみてください。
               </p>
             </div>
           ) : (
@@ -353,7 +535,10 @@ export function App() {
                   CATEGORY_LABELS.unsupported;
 
                 return (
-                  <li key={item.id} className={`queue-item status-${item.status}`}>
+                  <li
+                    key={item.id}
+                    className={`queue-item status-${item.status}`}
+                  >
                     <div className="item-main">
                       <div className="item-header">
                         <span className={`badge ${badge.className}`}>

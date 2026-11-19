@@ -11,7 +11,15 @@ export interface FileInspectResult {
   fileName: string;
   extension: string;
   size: number;
-  category: "image" | "data" | "text" | "document" | "unsupported" | string;
+  category:
+    | "image"
+    | "video"
+    | "audio"
+    | "data"
+    | "text"
+    | "document"
+    | "unsupported"
+    | string;
   availableTargets: TargetFormat[];
 }
 
@@ -20,6 +28,17 @@ export interface ConvertResult {
   outputPath: string;
   outputSize: number;
   durationMs: number;
+}
+
+export interface ToolStatus {
+  available: boolean;
+  command: string;
+  version: string | null;
+}
+
+export interface ToolsOverview {
+  ffmpeg: ToolStatus;
+  pandoc: ToolStatus;
 }
 
 export type ItemStatus = "idle" | "converting" | "done" | "error";

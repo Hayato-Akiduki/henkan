@@ -1,22 +1,146 @@
+use super::tools::{new_hidden_command, resolve_program};
 use super::{ConvertError, TargetFormat};
 use pulldown_cmark::{html, Options, Parser};
 use std::fs;
 use std::path::Path;
 
-const SUPPORTED_EXTENSIONS: &[&str] = &["md", "markdown"];
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    "md", "markdown", "docx", "odt", "epub", "rtf", "rst", "tex", "org", "html", "htm",
+];
 
 pub fn is_supported_extension(ext: &str) -> bool {
-    SUPPORTED_EXTENSIONS.contains(&ext)
+    DOCUMENT_EXTENSIONS.contains(&ext)
 }
 
-pub fn available_targets(_input_ext: &str) -> Vec<TargetFormat> {
-    vec![TargetFormat {
-        id: "html".to_string(),
-        label: "HTML".to_string(),
-        extension: "html".to_string(),
-        category: "document".to_string(),
-        description: "スタイル付き HTML ドキュメント".to_string(),
-    }]
+pub fn available_targets(input_ext: &str) -> Vec<TargetFormat> {
+    let normalized = match input_ext {
+        "markdown" => "md",
+        "htm" => "html",
+        other => other,
+    };
+
+    let all = vec![
+        TargetFormat {
+            id: "html".to_string(),
+            label: "HTML".to_string(),
+            extension: "html".to_string(),
+            category: "document".to_string(),
+            description: if normalized == "md" {
+                "スタイル付き HTML（内蔵エンジン）".to_string()
+            } else {
+                "HTML ドキュメント（Pandoc）".to_string()
+            },
+        },
+        TargetFormat {
+            id: "md".to_string(),
+            label: "Markdown".to_string(),
+            extension: "md".to_string(),
+            category: "document".to_string(),
+            description: "Markdown 形式（Pandoc）".to_string(),
+        },
+        TargetFormat {
+            id: "docx".to_string(),
+            label: "Word (DOCX)".to_string(),
+            extension: "docx".to_string(),
+            category: "document".to_string(),
+            description: "Microsoft Word 文書（Pandoc）".to_string(),
+        },
+        TargetFormat {
+            id: "epub".to_string(),
+            label: "EPUB".to_string(),
+            extension: "epub".to_string(),
+            category: "document".to_string(),
+            description: "電子書籍形式（Pandoc）".to_string(),
+        },
+        TargetFormat {
+            id: "pdf".to_string(),
+            label: "PDF".to_string(),
+            extension: "pdf".to_string(),
+            category: "document".to_string(),
+            description: "PDF 文書（Pandoc + PDFエンジン）".to_string(),
+        },
+        TargetFormat {
+            id: "rtf".to_string(),
+            label: "RTF".to_string(),
+            extension: "rtf".to_string(),
+            category: "document".to_string(),
+            description: "リッチテキスト形式（Pandoc）".to_string(),
+        },
+        TargetFormat {
+            id: "txt".to_string(),
+            label: "プレーンテキスト".to_string(),
+            extension: "txt".to_string(),
+            category: "document".to_string(),
+            description: "書式なしテキスト抽出（Pandoc）".to_string(),
+        },
+    ];
+
+    all.into_iter().filter(|t| t.id != normalized).collect()
+}
+
+pub fn convert_document(
+    input_path: &Path,
+    output_path: &Path,
+    input_ext: &str,
+    target_format: &str,
+    pandoc_path: Option<&str>,
+) -> Result<(), ConvertError> {
+    // Markdown -> HTML は外部ツール不要な Rust 内蔵エンジンで高速に変換
+    if (input_ext == "md" || input_ext == "markdown") && target_format == "html" {
+        return convert_markdown_to_html(input_path, output_path);
+    }
+
+    convert_with_pandoc(input_path, output_path, target_format, pandoc_path)
+}
+
+pub fn convert_with_pandoc(
+    input_path: &Path,
+    output_path: &Path,
+    target_format: &str,
+    pandoc_path: Option<&str>,
+) -> Result<(), ConvertError> {
+    let program = resolve_program(pandoc_path, "pandoc");
+    let mut cmd = new_hidden_command(&program);
+
+    cmd.arg(input_path).arg("-o").arg(output_path);
+
+    match target_format {
+        "html" => {
+            cmd.arg("--standalone");
+        }
+        "txt" => {
+            cmd.args(["-t", "plain"]);
+        }
+        "md" => {
+            cmd.args(["-t", "gfm"]);
+        }
+        _ => {}
+    }
+
+    let output = cmd.output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ConvertError::ConversionFailed(
+                "Pandoc が見つかりません。PC に Pandoc をインストールするか、画面上部のツール設定から pandoc 実行ファイルを指定してください。".to_string(),
+            )
+        } else {
+            ConvertError::ConversionFailed(format!("Pandoc の起動に失敗しました: {e}"))
+        }
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        if target_format == "pdf" && detail.contains("pdflatex") {
+            return Err(ConvertError::ConversionFailed(
+                "PDF 出力には Pandoc に加えて LaTeX（TeX Live / MiKTeX）または typst 等の PDF エンジンが必要です。".to_string(),
+            ));
+        }
+        return Err(ConvertError::ConversionFailed(format!(
+            "Pandoc 変換エラー: {detail}"
+        )));
+    }
+
+    Ok(())
 }
 
 pub fn convert_markdown_to_html(
@@ -105,5 +229,13 @@ mod tests {
         assert!(html_text.contains("<li>項目1</li>"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_document_targets() {
+        let md_targets = available_targets("md");
+        assert!(md_targets.iter().any(|t| t.id == "html"));
+        assert!(md_targets.iter().any(|t| t.id == "docx"));
+        assert!(!md_targets.iter().any(|t| t.id == "md"));
     }
 }
