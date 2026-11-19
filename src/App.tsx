@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import type {
   ConvertResult,
   FileInspectResult,
@@ -45,6 +48,77 @@ export function App() {
   );
   const [tools, setTools] = useState<ToolsOverview | null>(null);
   const [isCheckingTools, setIsCheckingTools] = useState(false);
+
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+
+  const handleCheckUpdate = useCallback(async (silent = false) => {
+    setIsCheckingUpdate(true);
+    if (!silent) setUpdateStatus(null);
+    try {
+      const update = await check();
+      if (update) {
+        setAvailableUpdate(update);
+        setUpdateStatus(null);
+      } else if (!silent) {
+        setAvailableUpdate(null);
+        setUpdateStatus("最新バージョンを使用しています。");
+      }
+    } catch (err) {
+      if (!silent) {
+        setUpdateStatus(
+          `更新確認に失敗しました（リリース先リポジトリ未設定またはオフラインの可能性があります）: ${String(err)}`
+        );
+      }
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, []);
+
+  const handleInstallUpdate = async () => {
+    if (!availableUpdate) return;
+    setIsInstallingUpdate(true);
+    setUpdateProgress(0);
+    setUpdateStatus("アップデートをダウンロード中...");
+
+    try {
+      let totalBytes = 0;
+      let downloadedBytes = 0;
+
+      await availableUpdate.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          totalBytes = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          if (totalBytes > 0) {
+            setUpdateProgress(
+              Math.min(100, Math.round((downloadedBytes / totalBytes) * 100))
+            );
+          }
+        } else if (event.event === "Finished") {
+          setUpdateProgress(100);
+          setUpdateStatus("インストール完了。アプリを再起動しています...");
+        }
+      });
+
+      await relaunch();
+    } catch (err) {
+      setUpdateStatus(`アップデートの適用に失敗しました: ${String(err)}`);
+      setIsInstallingUpdate(false);
+    }
+  };
+
+  useEffect(() => {
+    getVersion()
+      .then((v) => setAppVersion(v))
+      .catch(() => {});
+    // 起動時にバックグラウンドでサイレント更新チェック
+    handleCheckUpdate(true);
+  }, [handleCheckUpdate]);
 
   const refreshTools = useCallback(async (ffPath: string, pdPath: string) => {
     setIsCheckingTools(true);
@@ -298,12 +372,23 @@ export function App() {
         <div className="brand">
           <div className="brand-icon">H</div>
           <div>
-            <h1>Henkan</h1>
+            <div className="brand-title-row">
+              <h1>Henkan</h1>
+              {appVersion && <span className="version-tag">v{appVersion}</span>}
+            </div>
             <p className="subtitle">マルチフォーマット・ファイル変換ツール</p>
           </div>
         </div>
 
         <div className="header-right">
+          <button
+            className="btn btn-secondary btn-update-check"
+            onClick={() => handleCheckUpdate(false)}
+            disabled={isCheckingUpdate || isInstallingUpdate}
+            type="button"
+          >
+            {isCheckingUpdate ? "確認中..." : "更新確認"}
+          </button>
           <button
             className={`btn btn-tool-toggle ${showToolsPanel ? "active" : ""}`}
             onClick={() => setShowToolsPanel((v) => !v)}
@@ -327,6 +412,62 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {/* アップデート通知バナー */}
+      {availableUpdate && (
+        <section className="update-banner">
+          <div className="update-banner-info">
+            <strong>
+              新しいバージョン v{availableUpdate.version} が利用可能です
+            </strong>
+            {availableUpdate.body && (
+              <p className="update-notes">{availableUpdate.body}</p>
+            )}
+            {updateProgress !== null && (
+              <div className="update-progress-wrap">
+                <div
+                  className="update-progress-bar"
+                  style={{ width: `${updateProgress}%` }}
+                />
+              </div>
+            )}
+          </div>
+          <div className="update-banner-actions">
+            <button
+              className="btn btn-primary"
+              onClick={handleInstallUpdate}
+              disabled={isInstallingUpdate}
+              type="button"
+            >
+              {isInstallingUpdate
+                ? `更新中 (${updateProgress ?? 0}%)`
+                : "今すぐアップデート"}
+            </button>
+            {!isInstallingUpdate && (
+              <button
+                className="btn btn-ghost"
+                onClick={() => setAvailableUpdate(null)}
+                type="button"
+              >
+                あとで
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
+      {updateStatus && !availableUpdate && (
+        <div className="info-banner">
+          <span>{updateStatus}</span>
+          <button
+            className="btn-link"
+            onClick={() => setUpdateStatus(null)}
+            type="button"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
 
       {/* 外部ツール設定パネル */}
       {showToolsPanel && (
