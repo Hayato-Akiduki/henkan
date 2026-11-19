@@ -582,7 +582,7 @@ export function App() {
               : "ファイルをここにドラッグ＆ドロップ"}
           </p>
           <p className="dropzone-sub">
-            画像・動画・音声・JSON/YAML/TOML/CSV・テキスト・Markdown/Word など（複数選択OK）
+            画像・動画・音声・JSON/YAML/TOML/CSV・テキスト・PDF/Markdown/Word など（複数選択OK）
           </p>
         </section>
 

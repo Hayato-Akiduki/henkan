@@ -14,7 +14,7 @@
 - **画像（内蔵）**: PNG / JPEG / WebP / GIF / BMP / ICO / TIFF
 - **データ・文字コード（内蔵）**: JSON / YAML / TOML / CSV 相互変換、UTF-8 / UTF-8 BOM / Shift_JIS / EUC-JP
 - **動画・音声（FFmpeg）**: MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC / M4A / OGG / Opus
-- **文書（内蔵 + Pandoc）**: Markdown → HTML（内蔵）、Markdown / DOCX / EPUB / HTML / RTF / PDF 等（Pandoc）
+- **文書（内蔵 + Pandoc）**: PDF → Word (DOCX) / TXT / Markdown / HTML（内蔵）、Markdown → HTML（内蔵）、Markdown / DOCX / EPUB / HTML / RTF / PDF 等（Pandoc）
 
 ## 技術スタック
 
