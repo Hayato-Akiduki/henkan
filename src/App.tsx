@@ -1,20 +1,38 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import {
+  AlertCircleIcon,
+  ArrowRightIcon,
+  CheckCircleIcon,
+  FolderIcon,
+  MoonIcon,
+  PlayIcon,
+  PlusIcon,
+  RefreshIcon,
+  SunIcon,
+  TrashIcon,
+  UploadIcon,
+  WrenchIcon,
+} from "./components/Icons";
 import type {
   ConvertResult,
   FileInspectResult,
   QueueItem,
+  TargetFormat,
   ToolsOverview,
 } from "./types";
 import "./App.css";
 
 const STORAGE_FFMPEG_PATH = "henkan.ffmpegPath";
 const STORAGE_PANDOC_PATH = "henkan.pandocPath";
+const STORAGE_THEME = "henkan.theme";
+
+type FilterTab = "all" | "pending" | "done" | "error";
 
 const CATEGORY_LABELS: Record<string, { label: string; className: string }> = {
   image: { label: "画像", className: "badge-image" },
@@ -26,17 +44,61 @@ const CATEGORY_LABELS: Record<string, { label: string; className: string }> = {
   unsupported: { label: "未対応", className: "badge-unsupported" },
 };
 
+const SUPPORTED_CARDS = [
+  {
+    title: "画像",
+    badge: "内蔵・高速",
+    className: "badge-image",
+    formats: "PNG / JPG / WebP / GIF / BMP / ICO / TIFF",
+  },
+  {
+    title: "動画・音声",
+    badge: "FFmpeg",
+    className: "badge-video",
+    formats: "MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC",
+  },
+  {
+    title: "文書・PDF",
+    badge: "内蔵 + Pandoc",
+    className: "badge-doc",
+    formats: "PDF → Word / TXT、Markdown / DOCX / HTML / EPUB",
+  },
+  {
+    title: "データ・文字コード",
+    badge: "内蔵・高速",
+    className: "badge-data",
+    formats: "JSON / YAML / TOML / CSV、UTF-8 ⇔ Shift_JIS",
+  },
+];
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function formatSizeDelta(before: number, after: number): string | null {
+  if (before <= 0) return null;
+  const pct = Math.round(((after - before) / before) * 100);
+  if (pct === 0) return "±0%";
+  return pct > 0 ? `+${pct}%` : `${pct}%`;
+}
+
 export function App() {
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const saved = localStorage.getItem(STORAGE_THEME);
+    return saved === "light" ? "light" : "dark";
+  });
+
   const [items, setItems] = useState<QueueItem[]>([]);
+  const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const [outputDir, setOutputDir] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const [isConvertingAll, setIsConvertingAll] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [showToolsPanel, setShowToolsPanel] = useState(false);
@@ -55,6 +117,15 @@ export function App() {
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem(STORAGE_THEME, theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  };
 
   const handleCheckUpdate = useCallback(async (silent = false) => {
     setIsCheckingUpdate(true);
@@ -116,7 +187,6 @@ export function App() {
     getVersion()
       .then((v) => setAppVersion(v))
       .catch(() => {});
-    // 起動時にバックグラウンドでサイレント更新チェック
     handleCheckUpdate(true);
   }, [handleCheckUpdate]);
 
@@ -209,6 +279,7 @@ export function App() {
           const unique = newItems.filter((n) => !existingPaths.has(n.file.path));
           return [...prev, ...unique];
         });
+        setFilterTab("all");
       }
 
       if (errors.length > 0) {
@@ -219,7 +290,7 @@ export function App() {
     }
   }, []);
 
-  // Tauri v2 のネイティブドラッグ＆ドロップイベントを購読
+  // Tauri v2 のネイティブドラッグ＆ドロップイベントをウィンドウ全体で購読
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -237,9 +308,7 @@ export function App() {
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {
-        // ブラウザプレビュー時など Tauri 環境外では無視
-      });
+      .catch(() => {});
 
     return () => {
       if (unlisten) unlisten();
@@ -282,6 +351,55 @@ export function App() {
           ? { ...item, targetFormat, status: "idle", error: undefined }
           : item
       )
+    );
+  };
+
+  // 同じカテゴリのファイルが複数あるときにまとめて変換先を変更する
+  const bulkCategoryOptions = useMemo(() => {
+    const groups = new Map<
+      string,
+      { count: number; targets: Map<string, TargetFormat> }
+    >();
+
+    for (const item of items) {
+      if (item.file.availableTargets.length === 0) continue;
+      const cat = item.file.category;
+      const existing = groups.get(cat) ?? {
+        count: 0,
+        targets: new Map<string, TargetFormat>(),
+      };
+      existing.count += 1;
+      for (const t of item.file.availableTargets) {
+        if (!existing.targets.has(t.id)) {
+          existing.targets.set(t.id, t);
+        }
+      }
+      groups.set(cat, existing);
+    }
+
+    return Array.from(groups.entries())
+      .filter(([, g]) => g.count >= 2)
+      .map(([category, g]) => ({
+        category,
+        label: CATEGORY_LABELS[category]?.label ?? category,
+        count: g.count,
+        targets: Array.from(g.targets.values()),
+      }));
+  }, [items]);
+
+  const handleBulkFormatChange = (category: string, targetId: string) => {
+    if (!targetId) return;
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.file.category !== category || item.status === "converting") {
+          return item;
+        }
+        const canApply = item.file.availableTargets.some(
+          (t) => t.id === targetId
+        );
+        if (!canApply) return item;
+        return { ...item, targetFormat: targetId, status: "idle", error: undefined };
+      })
     );
   };
 
@@ -331,12 +449,15 @@ export function App() {
     if (targets.length === 0) return;
 
     setIsConvertingAll(true);
+    setBatchProgress({ current: 0, total: targets.length });
     try {
-      for (const item of targets) {
-        await convertSingleItem(item);
+      for (let i = 0; i < targets.length; i++) {
+        setBatchProgress({ current: i + 1, total: targets.length });
+        await convertSingleItem(targets[i]);
       }
     } finally {
       setIsConvertingAll(false);
+      setBatchProgress(null);
     }
   };
 
@@ -359,15 +480,44 @@ export function App() {
   const handleClearAll = () => {
     setItems([]);
     setNotice(null);
+    setFilterTab("all");
   };
 
   const pendingCount = items.filter(
     (it) => it.targetFormat && (it.status === "idle" || it.status === "error")
   ).length;
   const doneCount = items.filter((it) => it.status === "done").length;
+  const errorCount = items.filter((it) => it.status === "error").length;
+
+  const filteredItems = useMemo(() => {
+    switch (filterTab) {
+      case "pending":
+        return items.filter(
+          (it) => it.status === "idle" || it.status === "converting"
+        );
+      case "done":
+        return items.filter((it) => it.status === "done");
+      case "error":
+        return items.filter((it) => it.status === "error");
+      default:
+        return items;
+    }
+  }, [items, filterTab]);
 
   return (
     <div className="app-shell">
+      {/* ウィンドウ全体のドラッグ＆ドロップオーバーレイ */}
+      {isDragging && (
+        <div className="drag-overlay">
+          <div className="drag-overlay-box">
+            <UploadIcon size={36} />
+            <p className="drag-overlay-title">ここにドロップしてファイルを追加</p>
+            <p className="drag-overlay-sub">複数ファイル・異なる形式をまとめて追加できます</p>
+          </div>
+        </div>
+      )}
+
+      {/* ヘッダー */}
       <header className="app-header">
         <div className="brand">
           <div className="brand-icon">H</div>
@@ -382,18 +532,33 @@ export function App() {
 
         <div className="header-right">
           <button
-            className="btn btn-secondary btn-update-check"
+            className="btn btn-icon-only"
+            onClick={toggleTheme}
+            title={theme === "dark" ? "ライトテーマに切替" : "ダークテーマに切替"}
+            type="button"
+          >
+            {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
+          </button>
+
+          <button
+            className="btn btn-secondary btn-header"
             onClick={() => handleCheckUpdate(false)}
             disabled={isCheckingUpdate || isInstallingUpdate}
             type="button"
           >
-            {isCheckingUpdate ? "確認中..." : "更新確認"}
+            <RefreshIcon
+              size={14}
+              className={isCheckingUpdate ? "spin" : undefined}
+            />
+            <span>{isCheckingUpdate ? "確認中" : "更新確認"}</span>
           </button>
+
           <button
             className={`btn btn-tool-toggle ${showToolsPanel ? "active" : ""}`}
             onClick={() => setShowToolsPanel((v) => !v)}
             type="button"
           >
+            <WrenchIcon size={14} />
             <span
               className={`status-dot ${
                 tools?.ffmpeg.available ? "dot-ok" : "dot-warn"
@@ -408,7 +573,6 @@ export function App() {
               title={tools?.pandoc.available ? "Pandoc 利用可能" : "Pandoc 未検出"}
             />
             <span>Pandoc</span>
-            <span className="toggle-caret">{showToolsPanel ? "▲" : "▼"}</span>
           </button>
         </div>
       </header>
@@ -424,9 +588,9 @@ export function App() {
               <p className="update-notes">{availableUpdate.body}</p>
             )}
             {updateProgress !== null && (
-              <div className="update-progress-wrap">
+              <div className="progress-track">
                 <div
-                  className="update-progress-bar"
+                  className="progress-fill"
                   style={{ width: `${updateProgress}%` }}
                 />
               </div>
@@ -477,12 +641,16 @@ export function App() {
               外部変換エンジン設定（動画・音声 / 文書変換で使用）
             </span>
             <button
-              className="btn btn-secondary"
+              className="btn btn-secondary btn-sm"
               onClick={() => refreshTools(ffmpegPath, pandocPath)}
               disabled={isCheckingTools}
               type="button"
             >
-              {isCheckingTools ? "確認中..." : "再チェック"}
+              <RefreshIcon
+                size={13}
+                className={isCheckingTools ? "spin" : undefined}
+              />
+              <span>{isCheckingTools ? "確認中..." : "再チェック"}</span>
             </button>
           </div>
 
@@ -504,7 +672,7 @@ export function App() {
                     onClick={() => handleSelectToolBinary("ffmpeg")}
                     type="button"
                   >
-                    実行ファイル指定
+                    パス指定
                   </button>
                   {ffmpegPath && (
                     <button
@@ -512,7 +680,7 @@ export function App() {
                       onClick={() => handleResetToolBinary("ffmpeg")}
                       type="button"
                     >
-                      自動に戻す
+                      自動
                     </button>
                   )}
                 </div>
@@ -541,7 +709,7 @@ export function App() {
                     onClick={() => handleSelectToolBinary("pandoc")}
                     type="button"
                   >
-                    実行ファイル指定
+                    パス指定
                   </button>
                   {pandocPath && (
                     <button
@@ -549,7 +717,7 @@ export function App() {
                       onClick={() => handleResetToolBinary("pandoc")}
                       type="button"
                     >
-                      自動に戻す
+                      自動
                     </button>
                   )}
                 </div>
@@ -564,214 +732,391 @@ export function App() {
         </section>
       )}
 
-      <main className="app-main">
-        {/* ドロップゾーン */}
-        <section
-          className={`dropzone ${isDragging ? "dropzone-active" : ""}`}
-          onClick={handleSelectFiles}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") handleSelectFiles();
-          }}
-        >
-          <div className="dropzone-icon">+</div>
-          <p className="dropzone-title">
-            {isDragging
-              ? "ここにドロップして追加"
-              : "ファイルをここにドラッグ＆ドロップ"}
-          </p>
-          <p className="dropzone-sub">
-            画像・動画・音声・JSON/YAML/TOML/CSV・テキスト・PDF/Markdown/Word など（複数選択OK）
-          </p>
-        </section>
-
-        {notice && (
-          <div className="notice-banner">
+      {notice && (
+        <div className="notice-banner">
+          <div className="notice-left">
+            <AlertCircleIcon size={16} />
             <span>{notice}</span>
-            <button
-              className="btn-link"
-              onClick={() => setNotice(null)}
-              type="button"
-            >
-              閉じる
-            </button>
           </div>
-        )}
+          <button
+            className="btn-link"
+            onClick={() => setNotice(null)}
+            type="button"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
 
-        {/* ツールバー */}
-        <section className="toolbar">
-          <div className="output-dir-box">
-            <span className="output-label">出力先:</span>
-            <span
-              className="output-path"
-              title={outputDir || "元のファイルと同じフォルダ"}
+      <main className="app-main">
+        {items.length === 0 ? (
+          /* ファイル未追加時：大きく見やすいドロップエリア＋対応形式カード */
+          <section className="welcome-section">
+            <div
+              className="dropzone-hero"
+              onClick={handleSelectFiles}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") handleSelectFiles();
+              }}
             >
-              {outputDir || "元のファイルと同じフォルダ"}
-            </span>
-            <button
-              className="btn btn-secondary"
-              onClick={handleSelectOutputDir}
-              type="button"
-            >
-              変更
-            </button>
-            {outputDir && (
-              <button
-                className="btn btn-ghost"
-                onClick={() => setOutputDir("")}
-                type="button"
-              >
-                リセット
-              </button>
-            )}
-          </div>
-
-          <div className="toolbar-actions">
-            {doneCount > 0 && (
-              <button
-                className="btn btn-ghost"
-                onClick={handleClearCompleted}
-                disabled={isConvertingAll}
-                type="button"
-              >
-                完了をクリア
-              </button>
-            )}
-            {items.length > 0 && (
-              <button
-                className="btn btn-ghost"
-                onClick={handleClearAll}
-                disabled={isConvertingAll}
-                type="button"
-              >
-                すべてクリア
-              </button>
-            )}
-            <button
-              className="btn btn-primary"
-              onClick={handleConvertAll}
-              disabled={pendingCount === 0 || isConvertingAll}
-              type="button"
-            >
-              {isConvertingAll ? "変換中..." : `すべて変換 (${pendingCount})`}
-            </button>
-          </div>
-        </section>
-
-        {/* ファイルキュー */}
-        <section className="queue-section">
-          {items.length === 0 ? (
-            <div className="empty-state">
-              <p>まだファイルが追加されていません。</p>
-              <p className="empty-hint">
-                画像（PNG/JPG/WebP 等）、動画・音声（MP4/MP3/WAV 等）、データ（JSON/YAML/TOML/CSV）、文書（Markdown/DOCX/HTML 等）をドロップしてみてください。
+              <div className="dropzone-icon-ring">
+                <UploadIcon size={26} />
+              </div>
+              <h2 className="dropzone-title">
+                ファイルをここにドラッグ＆ドロップ
+              </h2>
+              <p className="dropzone-sub">
+                またはクリックしてファイルを選択（複数ファイル・異なる形式をまとめて追加可能）
               </p>
+              <span className="btn btn-primary dropzone-cta">
+                <PlusIcon size={15} />
+                <span>ファイルを選択</span>
+              </span>
             </div>
-          ) : (
-            <ul className="queue-list">
-              {items.map((item) => {
-                const badge =
-                  CATEGORY_LABELS[item.file.category] ??
-                  CATEGORY_LABELS.unsupported;
 
-                return (
-                  <li
-                    key={item.id}
-                    className={`queue-item status-${item.status}`}
+            <div className="supported-grid">
+              {SUPPORTED_CARDS.map((card) => (
+                <div key={card.title} className="supported-card">
+                  <div className="supported-card-head">
+                    <strong>{card.title}</strong>
+                    <span className={`badge ${card.className}`}>
+                      {card.badge}
+                    </span>
+                  </div>
+                  <p className="supported-card-formats">{card.formats}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : (
+          /* ファイル追加後：コンパクトな操作バー＋広いキュー領域 */
+          <>
+            {/* 出力先 & アクションバー */}
+            <section className="toolbar">
+              <button
+                className="btn btn-secondary"
+                onClick={handleSelectFiles}
+                disabled={isConvertingAll}
+                type="button"
+              >
+                <PlusIcon size={15} />
+                <span>ファイル追加</span>
+              </button>
+
+              <div className="output-dir-box">
+                <FolderIcon size={15} className="muted-icon" />
+                <span
+                  className="output-path"
+                  title={outputDir || "元のファイルと同じフォルダに保存"}
+                >
+                  {outputDir || "保存先: 元のファイルと同じフォルダ"}
+                </span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleSelectOutputDir}
+                  disabled={isConvertingAll}
+                  type="button"
+                >
+                  変更
+                </button>
+                {outputDir && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setOutputDir("")}
+                    disabled={isConvertingAll}
+                    type="button"
                   >
-                    <div className="item-main">
-                      <div className="item-header">
-                        <span className={`badge ${badge.className}`}>
-                          {badge.label}
-                        </span>
-                        <span className="item-name" title={item.file.path}>
-                          {item.file.fileName}
-                        </span>
-                        <span className="item-meta">
-                          .{item.file.extension || "なし"} ·{" "}
-                          {formatBytes(item.file.size)}
-                        </span>
-                      </div>
+                    戻す
+                  </button>
+                )}
+              </div>
 
-                      {item.status === "done" && item.result && (
-                        <div className="item-result">
-                          <span className="result-ok">
-                            ✓ 完了 ({formatBytes(item.result.outputSize)} /{" "}
-                            {item.result.durationMs}ms)
-                          </span>
+              <div className="toolbar-actions">
+                <button
+                  className="btn btn-primary btn-convert-all"
+                  onClick={handleConvertAll}
+                  disabled={pendingCount === 0 || isConvertingAll}
+                  type="button"
+                >
+                  <PlayIcon size={13} />
+                  <span>
+                    {isConvertingAll && batchProgress
+                      ? `変換中 (${batchProgress.current}/${batchProgress.total})`
+                      : `すべて変換 (${pendingCount})`}
+                  </span>
+                </button>
+              </div>
+            </section>
+
+            {/* 一括変換プログレスバー */}
+            {batchProgress && (
+              <div className="batch-progress">
+                <div className="batch-progress-label">
+                  <span>
+                    変換を実行しています... ({batchProgress.current} /{" "}
+                    {batchProgress.total})
+                  </span>
+                  <span>
+                    {Math.round(
+                      (batchProgress.current / batchProgress.total) * 100
+                    )}
+                    %
+                  </span>
+                </div>
+                <div className="progress-track">
+                  <div
+                    className="progress-fill"
+                    style={{
+                      width: `${Math.round(
+                        (batchProgress.current / batchProgress.total) * 100
+                      )}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* 同カテゴリの一括フォーマット変更バー */}
+            {bulkCategoryOptions.length > 0 && (
+              <section className="bulk-bar">
+                <span className="bulk-bar-label">まとめて形式を変更:</span>
+                <div className="bulk-controls">
+                  {bulkCategoryOptions.map((group) => (
+                    <div key={group.category} className="bulk-group">
+                      <span
+                        className={`badge ${
+                          CATEGORY_LABELS[group.category]?.className ?? ""
+                        }`}
+                      >
+                        {group.label} ({group.count})
+                      </span>
+                      <select
+                        className="format-select format-select-sm"
+                        defaultValue=""
+                        disabled={isConvertingAll}
+                        onChange={(e) => {
+                          handleBulkFormatChange(group.category, e.target.value);
+                          e.currentTarget.value = "";
+                        }}
+                      >
+                        <option value="" disabled>
+                          変換先を選択...
+                        </option>
+                        {group.targets.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            すべて {t.label} にする
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* キュー領域 */}
+            <section className="queue-section">
+              <div className="queue-subheader">
+                <div className="filter-tabs">
+                  <button
+                    className={`filter-tab ${filterTab === "all" ? "active" : ""}`}
+                    onClick={() => setFilterTab("all")}
+                    type="button"
+                  >
+                    すべて <span className="tab-count">{items.length}</span>
+                  </button>
+                  <button
+                    className={`filter-tab ${filterTab === "pending" ? "active" : ""}`}
+                    onClick={() => setFilterTab("pending")}
+                    type="button"
+                  >
+                    待機中{" "}
+                    <span className="tab-count">
+                      {
+                        items.filter(
+                          (it) =>
+                            it.status === "idle" || it.status === "converting"
+                        ).length
+                      }
+                    </span>
+                  </button>
+                  <button
+                    className={`filter-tab ${filterTab === "done" ? "active" : ""}`}
+                    onClick={() => setFilterTab("done")}
+                    type="button"
+                  >
+                    完了 <span className="tab-count">{doneCount}</span>
+                  </button>
+                  {errorCount > 0 && (
+                    <button
+                      className={`filter-tab tab-error ${
+                        filterTab === "error" ? "active" : ""
+                      }`}
+                      onClick={() => setFilterTab("error")}
+                      type="button"
+                    >
+                      エラー <span className="tab-count">{errorCount}</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="queue-clear-actions">
+                  {doneCount > 0 && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={handleClearCompleted}
+                      disabled={isConvertingAll}
+                      type="button"
+                    >
+                      完了をクリア
+                    </button>
+                  )}
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleClearAll}
+                    disabled={isConvertingAll}
+                    type="button"
+                  >
+                    すべてクリア
+                  </button>
+                </div>
+              </div>
+
+              {filteredItems.length === 0 ? (
+                <div className="empty-filter-state">
+                  この条件に一致するファイルはありません。
+                </div>
+              ) : (
+                <ul className="queue-list">
+                  {filteredItems.map((item) => {
+                    const badge =
+                      CATEGORY_LABELS[item.file.category] ??
+                      CATEGORY_LABELS.unsupported;
+                    const delta =
+                      item.status === "done" && item.result
+                        ? formatSizeDelta(item.file.size, item.result.outputSize)
+                        : null;
+
+                    return (
+                      <li
+                        key={item.id}
+                        className={`queue-item status-${item.status}`}
+                      >
+                        <div className="item-main">
+                          <div className="item-header">
+                            <span className={`badge ${badge.className}`}>
+                              {badge.label}
+                            </span>
+                            <span className="item-name" title={item.file.path}>
+                              {item.file.fileName}
+                            </span>
+                            <span className="item-meta">
+                              .{item.file.extension || "なし"} ·{" "}
+                              {formatBytes(item.file.size)}
+                            </span>
+                          </div>
+
+                          {item.status === "converting" && (
+                            <div className="item-converting">
+                              <span className="mini-spinner" />
+                              <span>変換処理を実行中...</span>
+                            </div>
+                          )}
+
+                          {item.status === "done" && item.result && (
+                            <div className="item-result">
+                              <span className="result-ok">
+                                <CheckCircleIcon size={14} />
+                                <span>
+                                  完了 · {formatBytes(item.result.outputSize)}
+                                  {delta && (
+                                    <span className="size-delta">
+                                      ({delta})
+                                    </span>
+                                  )}
+                                  {" · "}
+                                  {item.result.durationMs}ms
+                                </span>
+                              </span>
+                              <button
+                                className="btn-link btn-reveal"
+                                onClick={() =>
+                                  handleRevealFile(item.result!.outputPath)
+                                }
+                                type="button"
+                              >
+                                <FolderIcon size={13} />
+                                <span>フォルダを開く</span>
+                              </button>
+                            </div>
+                          )}
+
+                          {item.status === "error" && item.error && (
+                            <div className="item-error">
+                              <AlertCircleIcon size={14} />
+                              <span>{item.error}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="item-controls">
+                          {item.file.availableTargets.length > 0 ? (
+                            <>
+                              <ArrowRightIcon size={15} className="arrow" />
+                              <select
+                                className="format-select"
+                                value={item.targetFormat}
+                                disabled={item.status === "converting"}
+                                onChange={(e) =>
+                                  handleChangeTarget(item.id, e.target.value)
+                                }
+                              >
+                                {item.file.availableTargets.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.label} — {t.description}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => convertSingleItem(item)}
+                                disabled={
+                                  item.status === "converting" ||
+                                  isConvertingAll
+                                }
+                                type="button"
+                              >
+                                {item.status === "converting"
+                                  ? "変換中"
+                                  : item.status === "done"
+                                  ? "再変換"
+                                  : "変換"}
+                              </button>
+                            </>
+                          ) : (
+                            <span className="unsupported-text">未対応形式</span>
+                          )}
+
                           <button
-                            className="btn-link"
-                            onClick={() =>
-                              handleRevealFile(item.result!.outputPath)
-                            }
+                            className="btn-icon-remove"
+                            onClick={() => handleRemoveItem(item.id)}
+                            disabled={item.status === "converting"}
+                            title="リストから削除"
                             type="button"
                           >
-                            フォルダを開く
+                            <TrashIcon size={15} />
                           </button>
                         </div>
-                      )}
-
-                      {item.status === "error" && item.error && (
-                        <div className="item-error">{item.error}</div>
-                      )}
-                    </div>
-
-                    <div className="item-controls">
-                      {item.file.availableTargets.length > 0 ? (
-                        <>
-                          <span className="arrow">→</span>
-                          <select
-                            className="format-select"
-                            value={item.targetFormat}
-                            disabled={item.status === "converting"}
-                            onChange={(e) =>
-                              handleChangeTarget(item.id, e.target.value)
-                            }
-                          >
-                            {item.file.availableTargets.map((t) => (
-                              <option key={t.id} value={t.id}>
-                                {t.label} ({t.description})
-                              </option>
-                            ))}
-                          </select>
-                          <button
-                            className="btn btn-secondary"
-                            onClick={() => convertSingleItem(item)}
-                            disabled={
-                              item.status === "converting" || isConvertingAll
-                            }
-                            type="button"
-                          >
-                            {item.status === "converting"
-                              ? "変換中"
-                              : item.status === "done"
-                              ? "再変換"
-                              : "変換"}
-                          </button>
-                        </>
-                      ) : (
-                        <span className="unsupported-text">
-                          現在のバージョンでは未対応です
-                        </span>
-                      )}
-
-                      <button
-                        className="btn-icon-remove"
-                        onClick={() => handleRemoveItem(item.id)}
-                        disabled={item.status === "converting"}
-                        title="リストから削除"
-                        type="button"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          </>
+        )}
       </main>
     </div>
   );
