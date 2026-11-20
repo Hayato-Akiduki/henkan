@@ -633,7 +633,13 @@ export function App() {
       {/* ヘッダー */}
       <header className="app-header">
         <div className="brand">
-          <div className="brand-icon">H</div>
+          <img
+            src="/icon.png"
+            alt="Henkan"
+            className="brand-icon-img"
+            width={40}
+            height={40}
+          />
           <div>
             <div className="brand-title-row">
               <h1>Henkan</h1>
