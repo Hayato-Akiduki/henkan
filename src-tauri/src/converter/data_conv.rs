@@ -1,3 +1,4 @@
+use super::excel_conv;
 use super::{ConvertError, TargetFormat};
 use encoding_rs::{EUC_JP, SHIFT_JIS, UTF_8};
 use serde_json::{Map, Value};
@@ -52,6 +53,13 @@ pub fn structured_targets(input_ext: &str) -> Vec<TargetFormat> {
             extension: "csv".to_string(),
             category: "data".to_string(),
             description: "表形式データ（配列データ向け）".to_string(),
+        },
+        TargetFormat {
+            id: "xlsx".to_string(),
+            label: "Excel (XLSX)".to_string(),
+            extension: "xlsx".to_string(),
+            category: "data".to_string(),
+            description: "Excel ワークブック生成（内蔵）".to_string(),
         },
     ];
 
@@ -151,6 +159,9 @@ pub fn convert_structured_data(
     let content = decode_auto(&raw_bytes);
 
     let value = parse_data(&content, input_ext)?;
+    if target_format == "xlsx" {
+        return excel_conv::write_json_value_as_xlsx(&value, output_path);
+    }
     let serialized = serialize_data(&value, target_format)?;
 
     fs::write(output_path, serialized.as_bytes())?;

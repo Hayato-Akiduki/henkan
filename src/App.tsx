@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -20,7 +21,9 @@ import {
   WrenchIcon,
 } from "./components/Icons";
 import type {
+  ConvertOptions,
   ConvertResult,
+  DownloadProgressEvent,
   FileInspectResult,
   QueueItem,
   TargetFormat,
@@ -38,6 +41,8 @@ const CATEGORY_LABELS: Record<string, { label: string; className: string }> = {
   image: { label: "画像", className: "badge-image" },
   video: { label: "動画", className: "badge-video" },
   audio: { label: "音声", className: "badge-audio" },
+  excel: { label: "Excel", className: "badge-excel" },
+  archive: { label: "圧縮", className: "badge-archive" },
   data: { label: "データ", className: "badge-data" },
   text: { label: "テキスト", className: "badge-text" },
   document: { label: "文書", className: "badge-doc" },
@@ -46,28 +51,34 @@ const CATEGORY_LABELS: Record<string, { label: string; className: string }> = {
 
 const SUPPORTED_CARDS = [
   {
-    title: "画像",
+    title: "画像・SVG",
     badge: "内蔵・高速",
     className: "badge-image",
-    formats: "PNG / JPG / WebP / GIF / BMP / ICO / TIFF",
+    formats: "PNG / JPG / WebP / GIF / ICO / SVG → 画像・PDF（リサイズ対応）",
+  },
+  {
+    title: "Excel・データ",
+    badge: "内蔵・高速",
+    className: "badge-excel",
+    formats: "XLSX ⇔ CSV / JSON / YAML / TOML、文字コード変換",
+  },
+  {
+    title: "PDF・文書",
+    badge: "内蔵 + Pandoc",
+    className: "badge-doc",
+    formats: "PDF → Word / TXT / ページ分割・結合、Markdown / DOCX / EPUB",
+  },
+  {
+    title: "圧縮ファイル",
+    badge: "内蔵・高速",
+    className: "badge-archive",
+    formats: "ZIP / TAR.GZ / 7z の相互変換・フォルダ解凍",
   },
   {
     title: "動画・音声",
-    badge: "FFmpeg",
+    badge: "FFmpeg 自動導入",
     className: "badge-video",
-    formats: "MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC",
-  },
-  {
-    title: "文書・PDF",
-    badge: "内蔵 + Pandoc",
-    className: "badge-doc",
-    formats: "PDF → Word / TXT、Markdown / DOCX / HTML / EPUB",
-  },
-  {
-    title: "データ・文字コード",
-    badge: "内蔵・高速",
-    className: "badge-data",
-    formats: "JSON / YAML / TOML / CSV、UTF-8 ⇔ Shift_JIS",
+    formats: "MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC（軽量化可）",
   },
 ];
 
@@ -100,7 +111,18 @@ export function App() {
     total: number;
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [mergeResult, setMergeResult] = useState<ConvertResult | null>(null);
+  const [isMergingPdf, setIsMergingPdf] = useState(false);
 
+  // 変換オプション
+  const [showOptions, setShowOptions] = useState(false);
+  const [options, setOptions] = useState<ConvertOptions>({
+    imageQuality: 85,
+    imageMaxWidth: null,
+    videoPreset: "default",
+  });
+
+  // 外部ツール設定 + FFmpeg 自動ダウンロード
   const [showToolsPanel, setShowToolsPanel] = useState(false);
   const [ffmpegPath, setFfmpegPath] = useState<string>(
     () => localStorage.getItem(STORAGE_FFMPEG_PATH) ?? ""
@@ -110,7 +132,11 @@ export function App() {
   );
   const [tools, setTools] = useState<ToolsOverview | null>(null);
   const [isCheckingTools, setIsCheckingTools] = useState(false);
+  const [isDownloadingFfmpeg, setIsDownloadingFfmpeg] = useState(false);
+  const [ffmpegDlProgress, setFfmpegDlProgress] =
+    useState<DownloadProgressEvent | null>(null);
 
+  // 自動アップデート
   const [appVersion, setAppVersion] = useState<string>("");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
@@ -199,7 +225,7 @@ export function App() {
       });
       setTools(overview);
     } catch {
-      // ブラウザプレビュー時など Tauri 環境外では無視
+      // Tauri 環境外では無視
     } finally {
       setIsCheckingTools(false);
     }
@@ -208,6 +234,41 @@ export function App() {
   useEffect(() => {
     refreshTools(ffmpegPath, pandocPath);
   }, [ffmpegPath, pandocPath, refreshTools]);
+
+  // FFmpeg 自動ダウンロード進捗イベント購読
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<DownloadProgressEvent>("ffmpeg-download-progress", (event) => {
+      setFfmpegDlProgress(event.payload);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handleDownloadFfmpeg = async () => {
+    setIsDownloadingFfmpeg(true);
+    setFfmpegDlProgress({ stage: "ダウンロードを準備中...", percent: 1 });
+    setNotice(null);
+    try {
+      await invoke<string>("download_ffmpeg");
+      // 手動パスが設定されていた場合は自動管理を優先するためクリア
+      if (ffmpegPath) {
+        setFfmpegPath("");
+        localStorage.removeItem(STORAGE_FFMPEG_PATH);
+      }
+      await refreshTools("", pandocPath);
+    } catch (err) {
+      setNotice(`FFmpeg の自動ダウンロードに失敗しました: ${String(err)}`);
+    } finally {
+      setIsDownloadingFfmpeg(false);
+    }
+  };
 
   const handleSelectToolBinary = async (tool: "ffmpeg" | "pandoc") => {
     try {
@@ -242,6 +303,7 @@ export function App() {
   const addFilePaths = useCallback(async (paths: string[]) => {
     if (paths.length === 0) return;
     setNotice(null);
+    setMergeResult(null);
 
     try {
       const results = await invoke<
@@ -290,7 +352,6 @@ export function App() {
     }
   }, []);
 
-  // Tauri v2 のネイティブドラッグ＆ドロップイベントをウィンドウ全体で購読
   useEffect(() => {
     let unlisten: (() => void) | undefined;
 
@@ -354,7 +415,6 @@ export function App() {
     );
   };
 
-  // 同じカテゴリのファイルが複数あるときにまとめて変換先を変更する
   const bulkCategoryOptions = useMemo(() => {
     const groups = new Map<
       string,
@@ -387,6 +447,45 @@ export function App() {
       }));
   }, [items]);
 
+  // 複数画像 または 複数 PDF を 1 冊の PDF に結合できるか判定
+  const mergeablePdfInfo = useMemo(() => {
+    const pdfs = items.filter((it) => it.file.extension === "pdf");
+    if (pdfs.length >= 2) {
+      return { kind: "pdf" as const, paths: pdfs.map((i) => i.file.path) };
+    }
+    const rasterImages = items.filter(
+      (it) => it.file.category === "image" && it.file.extension !== "svg"
+    );
+    if (rasterImages.length >= 2) {
+      return {
+        kind: "image" as const,
+        paths: rasterImages.map((i) => i.file.path),
+      };
+    }
+    return null;
+  }, [items]);
+
+  const handleMergeToPdf = async () => {
+    if (!mergeablePdfInfo) return;
+    setIsMergingPdf(true);
+    setNotice(null);
+    setMergeResult(null);
+    try {
+      const res = await invoke<ConvertResult>("merge_to_pdf", {
+        request: {
+          inputPaths: mergeablePdfInfo.paths,
+          outputDir: outputDir || null,
+          imageQuality: options.imageQuality,
+        },
+      });
+      setMergeResult(res);
+    } catch (err) {
+      setNotice(`PDF 結合に失敗しました: ${String(err)}`);
+    } finally {
+      setIsMergingPdf(false);
+    }
+  };
+
   const handleBulkFormatChange = (category: string, targetId: string) => {
     if (!targetId) return;
     setItems((prev) =>
@@ -398,7 +497,12 @@ export function App() {
           (t) => t.id === targetId
         );
         if (!canApply) return item;
-        return { ...item, targetFormat: targetId, status: "idle", error: undefined };
+        return {
+          ...item,
+          targetFormat: targetId,
+          status: "idle",
+          error: undefined,
+        };
       })
     );
   };
@@ -422,6 +526,11 @@ export function App() {
           outputDir: outputDir || null,
           ffmpegPath: ffmpegPath || null,
           pandocPath: pandocPath || null,
+          options: {
+            imageQuality: options.imageQuality,
+            imageMaxWidth: options.imageMaxWidth,
+            videoPreset: options.videoPreset,
+          },
         },
       });
 
@@ -480,6 +589,7 @@ export function App() {
   const handleClearAll = () => {
     setItems([]);
     setNotice(null);
+    setMergeResult(null);
     setFilterTab("all");
   };
 
@@ -506,13 +616,16 @@ export function App() {
 
   return (
     <div className="app-shell">
-      {/* ウィンドウ全体のドラッグ＆ドロップオーバーレイ */}
       {isDragging && (
         <div className="drag-overlay">
           <div className="drag-overlay-box">
             <UploadIcon size={36} />
-            <p className="drag-overlay-title">ここにドロップしてファイルを追加</p>
-            <p className="drag-overlay-sub">複数ファイル・異なる形式をまとめて追加できます</p>
+            <p className="drag-overlay-title">
+              ここにドロップしてファイルを追加
+            </p>
+            <p className="drag-overlay-sub">
+              複数ファイル・異なる形式をまとめて追加できます
+            </p>
           </div>
         </div>
       )}
@@ -534,7 +647,9 @@ export function App() {
           <button
             className="btn btn-icon-only"
             onClick={toggleTheme}
-            title={theme === "dark" ? "ライトテーマに切替" : "ダークテーマに切替"}
+            title={
+              theme === "dark" ? "ライトテーマに切替" : "ダークテーマに切替"
+            }
             type="button"
           >
             {theme === "dark" ? <SunIcon size={16} /> : <MoonIcon size={16} />}
@@ -563,14 +678,18 @@ export function App() {
               className={`status-dot ${
                 tools?.ffmpeg.available ? "dot-ok" : "dot-warn"
               }`}
-              title={tools?.ffmpeg.available ? "FFmpeg 利用可能" : "FFmpeg 未検出"}
+              title={
+                tools?.ffmpeg.available ? "FFmpeg 利用可能" : "FFmpeg 未検出"
+              }
             />
             <span>FFmpeg</span>
             <span
               className={`status-dot ${
                 tools?.pandoc.available ? "dot-ok" : "dot-warn"
               }`}
-              title={tools?.pandoc.available ? "Pandoc 利用可能" : "Pandoc 未検出"}
+              title={
+                tools?.pandoc.available ? "Pandoc 利用可能" : "Pandoc 未検出"
+              }
             />
             <span>Pandoc</span>
           </button>
@@ -633,7 +752,7 @@ export function App() {
         </div>
       )}
 
-      {/* 外部ツール設定パネル */}
+      {/* 外部ツール設定パネル（FFmpeg 自動ダウンロード対応） */}
       {showToolsPanel && (
         <section className="tools-panel">
           <div className="tools-panel-header">
@@ -643,7 +762,7 @@ export function App() {
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => refreshTools(ffmpegPath, pandocPath)}
-              disabled={isCheckingTools}
+              disabled={isCheckingTools || isDownloadingFfmpeg}
               type="button"
             >
               <RefreshIcon
@@ -664,12 +783,31 @@ export function App() {
                     }`}
                   />
                   <strong>FFmpeg</strong>
-                  <span className="tool-role">動画・音声変換</span>
+                  <span className="tool-role">
+                    {tools?.ffmpeg.managed
+                      ? "アプリ内蔵管理済み"
+                      : "動画・音声変換"}
+                  </span>
                 </div>
                 <div className="tool-card-actions">
                   <button
+                    className={`btn btn-sm ${
+                      tools?.ffmpeg.available ? "btn-secondary" : "btn-primary"
+                    }`}
+                    onClick={handleDownloadFfmpeg}
+                    disabled={isDownloadingFfmpeg}
+                    type="button"
+                  >
+                    {isDownloadingFfmpeg
+                      ? "導入中..."
+                      : tools?.ffmpeg.available
+                      ? "再ダウンロード"
+                      : "自動ダウンロード"}
+                  </button>
+                  <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => handleSelectToolBinary("ffmpeg")}
+                    disabled={isDownloadingFfmpeg}
                     type="button"
                   >
                     パス指定
@@ -685,10 +823,26 @@ export function App() {
                   )}
                 </div>
               </div>
+
+              {ffmpegDlProgress && (
+                <div className="dl-progress-box">
+                  <div className="dl-progress-text">
+                    <span>{ffmpegDlProgress.stage}</span>
+                    <span>{ffmpegDlProgress.percent}%</span>
+                  </div>
+                  <div className="progress-track">
+                    <div
+                      className="progress-fill"
+                      style={{ width: `${ffmpegDlProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
               <p className="tool-detail">
                 {tools?.ffmpeg.available
                   ? tools.ffmpeg.version ?? "検出済み"
-                  : "未検出（Windows: winget install Gyan.FFmpeg / macOS: brew install ffmpeg）"}
+                  : "未検出です。「自動ダウンロード」を押すとアプリ専用フォルダに自動導入します。"}
               </p>
             </div>
 
@@ -701,7 +855,7 @@ export function App() {
                     }`}
                   />
                   <strong>Pandoc</strong>
-                  <span className="tool-role">DOCX / EPUB / PDF 変換</span>
+                  <span className="tool-role">DOCX / EPUB 変換</span>
                 </div>
                 <div className="tool-card-actions">
                   <button
@@ -748,9 +902,37 @@ export function App() {
         </div>
       )}
 
+      {mergeResult && (
+        <div className="success-banner">
+          <div className="notice-left">
+            <CheckCircleIcon size={16} />
+            <span>
+              PDF 結合が完了しました ({formatBytes(mergeResult.outputSize)} /{" "}
+              {mergeResult.durationMs}ms)
+            </span>
+          </div>
+          <div className="toolbar-actions">
+            <button
+              className="btn-link"
+              onClick={() => handleRevealFile(mergeResult.outputPath)}
+              type="button"
+            >
+              <FolderIcon size={13} />
+              <span>フォルダを開く</span>
+            </button>
+            <button
+              className="btn-link"
+              onClick={() => setMergeResult(null)}
+              type="button"
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="app-main">
         {items.length === 0 ? (
-          /* ファイル未追加時：大きく見やすいドロップエリア＋対応形式カード */
           <section className="welcome-section">
             <div
               className="dropzone-hero"
@@ -791,7 +973,6 @@ export function App() {
             </div>
           </section>
         ) : (
-          /* ファイル追加後：コンパクトな操作バー＋広いキュー領域 */
           <>
             {/* 出力先 & アクションバー */}
             <section className="toolbar">
@@ -835,6 +1016,31 @@ export function App() {
 
               <div className="toolbar-actions">
                 <button
+                  className={`btn btn-secondary btn-sm ${
+                    showOptions ? "btn-active-outline" : ""
+                  }`}
+                  onClick={() => setShowOptions((v) => !v)}
+                  type="button"
+                >
+                  画質・サイズ設定
+                </button>
+
+                {mergeablePdfInfo && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleMergeToPdf}
+                    disabled={isMergingPdf || isConvertingAll}
+                    type="button"
+                  >
+                    {isMergingPdf
+                      ? "結合中..."
+                      : mergeablePdfInfo.kind === "pdf"
+                      ? `PDF を結合 (${mergeablePdfInfo.paths.length})`
+                      : `画像を1冊のPDFへ (${mergeablePdfInfo.paths.length})`}
+                  </button>
+                )}
+
+                <button
                   className="btn btn-primary btn-convert-all"
                   onClick={handleConvertAll}
                   disabled={pendingCount === 0 || isConvertingAll}
@@ -849,6 +1055,73 @@ export function App() {
                 </button>
               </div>
             </section>
+
+            {/* 変換オプションパネル（画像画質・リサイズ・動画プリセット） */}
+            {showOptions && (
+              <section className="options-panel">
+                <div className="option-item">
+                  <label htmlFor="opt-quality">
+                    画像画質 (JPEG/PDF): <strong>{options.imageQuality}%</strong>
+                  </label>
+                  <input
+                    id="opt-quality"
+                    type="range"
+                    min={40}
+                    max={100}
+                    step={5}
+                    value={options.imageQuality}
+                    onChange={(e) =>
+                      setOptions((prev) => ({
+                        ...prev,
+                        imageQuality: Number(e.target.value),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className="option-item">
+                  <label htmlFor="opt-max-width">画像・SVG の最大幅:</label>
+                  <select
+                    id="opt-max-width"
+                    className="format-select format-select-sm"
+                    value={options.imageMaxWidth ?? ""}
+                    onChange={(e) =>
+                      setOptions((prev) => ({
+                        ...prev,
+                        imageMaxWidth: e.target.value
+                          ? Number(e.target.value)
+                          : null,
+                      }))
+                    }
+                  >
+                    <option value="">変更しない（原寸）</option>
+                    <option value="1920">1920px（フルHD）</option>
+                    <option value="1280">1280px（Web向け）</option>
+                    <option value="800">800px（軽量）</option>
+                    <option value="512">512px（アイコン/サムネ）</option>
+                  </select>
+                </div>
+
+                <div className="option-item">
+                  <label htmlFor="opt-video-preset">動画プリセット:</label>
+                  <select
+                    id="opt-video-preset"
+                    className="format-select format-select-sm"
+                    value={options.videoPreset}
+                    onChange={(e) =>
+                      setOptions((prev) => ({
+                        ...prev,
+                        videoPreset: e.target.value as ConvertOptions["videoPreset"],
+                      }))
+                    }
+                  >
+                    <option value="default">標準バランス</option>
+                    <option value="compact">SNS向け軽量化（最大720p）</option>
+                    <option value="high">高画質</option>
+                  </select>
+                </div>
+              </section>
+            )}
 
             {/* 一括変換プログレスバー */}
             {batchProgress && (

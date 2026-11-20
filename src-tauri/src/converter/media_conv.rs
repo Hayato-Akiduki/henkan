@@ -1,5 +1,5 @@
-use super::tools::{new_hidden_command, resolve_program};
-use super::{ConvertError, TargetFormat};
+use super::tools::{new_hidden_command, resolve_ffmpeg_program};
+use super::{ConvertError, ConvertOptions, TargetFormat};
 use std::path::Path;
 
 const VIDEO_EXTENSIONS: &[&str] = &[
@@ -135,31 +135,58 @@ pub fn convert_media(
     output_path: &Path,
     target_format: &str,
     ffmpeg_path: Option<&str>,
+    app_data_dir: Option<&Path>,
+    options: Option<&ConvertOptions>,
 ) -> Result<(), ConvertError> {
-    let program = resolve_program(ffmpeg_path, "ffmpeg");
+    let program = resolve_ffmpeg_program(ffmpeg_path, app_data_dir);
     let mut cmd = new_hidden_command(&program);
 
     cmd.arg("-y").arg("-i").arg(input_path);
 
+    let preset = options
+        .and_then(|o| o.video_preset.as_deref())
+        .unwrap_or("default");
+
     match target_format {
-        "mp4" => {
+        "mp4" | "mov" | "mkv" => {
             cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]);
+            match preset {
+                "compact" => {
+                    // SNS / 共有向け軽量化（最大高さ 720p、CRF 28、音声 128k）
+                    cmd.args([
+                        "-vf",
+                        "scale=-2:'min(720,ih)'",
+                        "-crf",
+                        "28",
+                        "-b:a",
+                        "128k",
+                    ]);
+                }
+                "high" => {
+                    cmd.args(["-crf", "18", "-b:a", "256k"]);
+                }
+                _ => {
+                    cmd.args(["-crf", "23"]);
+                }
+            }
         }
         "webm" => {
-            cmd.args(["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "32", "-c:a", "libopus"]);
-        }
-        "mkv" => {
-            cmd.args(["-c:v", "libx264", "-c:a", "aac"]);
-        }
-        "mov" => {
-            cmd.args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]);
+            let crf = match preset {
+                "compact" => "36",
+                "high" => "24",
+                _ => "32",
+            };
+            cmd.args(["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", crf, "-c:a", "libopus"]);
+            if preset == "compact" {
+                cmd.args(["-vf", "scale=-2:'min(720,ih)'"]);
+            }
         }
         "gif" => {
-            // パレットを自動生成して高品質な GIF に変換（幅最大 640px・12fps）
-            cmd.args([
-                "-vf",
-                "fps=12,scale='min(640,iw)':-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
-            ]);
+            let width = if preset == "compact" { "480" } else { "640" };
+            let vf = format!(
+                "fps=12,scale='min({width},iw)':-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+            );
+            cmd.args(["-vf", &vf]);
         }
         "mp3" => {
             cmd.args(["-vn", "-c:a", "libmp3lame", "-q:a", "2"]);
@@ -187,7 +214,7 @@ pub fn convert_media(
     let output = cmd.output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ConvertError::ConversionFailed(
-                "FFmpeg が見つかりません。PC に FFmpeg をインストールするか、画面上部のツール設定から ffmpeg 実行ファイルを指定してください。".to_string(),
+                "FFmpeg が見つかりません。画面上部の「FFmpeg」ボタンから「自動ダウンロード」を実行してください。".to_string(),
             )
         } else {
             ConvertError::ConversionFailed(format!("FFmpeg の起動に失敗しました: {e}"))
@@ -242,7 +269,6 @@ mod tests {
         let dst_mp3 = dir.join("sample.mp3");
         let dst_wav = dir.join("sample.wav");
 
-        // 1秒のカラーバー動画＋サイン波音声をテスト素材として生成
         let generated = new_hidden_command("ffmpeg")
             .args([
                 "-y",
@@ -266,13 +292,13 @@ mod tests {
             .unwrap();
         assert!(generated.status.success(), "テスト用 MP4 生成に失敗");
 
-        convert_media(&src_mp4, &dst_gif, "gif", None).unwrap();
+        convert_media(&src_mp4, &dst_gif, "gif", None, None, None).unwrap();
         assert!(dst_gif.exists() && fs::metadata(&dst_gif).unwrap().len() > 0);
 
-        convert_media(&src_mp4, &dst_mp3, "mp3", None).unwrap();
+        convert_media(&src_mp4, &dst_mp3, "mp3", None, None, None).unwrap();
         assert!(dst_mp3.exists() && fs::metadata(&dst_mp3).unwrap().len() > 0);
 
-        convert_media(&dst_mp3, &dst_wav, "wav", None).unwrap();
+        convert_media(&dst_mp3, &dst_wav, "wav", None, None, None).unwrap();
         assert!(dst_wav.exists() && fs::metadata(&dst_wav).unwrap().len() > 0);
 
         let _ = fs::remove_dir_all(&dir);

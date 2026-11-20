@@ -15,12 +15,20 @@ export interface FileInspectResult {
     | "image"
     | "video"
     | "audio"
+    | "excel"
+    | "archive"
     | "data"
     | "text"
     | "document"
     | "unsupported"
     | string;
   availableTargets: TargetFormat[];
+}
+
+export interface ConvertOptions {
+  imageQuality: number;
+  imageMaxWidth: number | null;
+  videoPreset: "default" | "compact" | "high";
 }
 
 export interface ConvertResult {
@@ -34,11 +42,17 @@ export interface ToolStatus {
   available: boolean;
   command: string;
   version: string | null;
+  managed: boolean;
 }
 
 export interface ToolsOverview {
   ffmpeg: ToolStatus;
   pandoc: ToolStatus;
+}
+
+export interface DownloadProgressEvent {
+  stage: string;
+  percent: number;
 }
 
 export type ItemStatus = "idle" | "converting" | "done" | "error";

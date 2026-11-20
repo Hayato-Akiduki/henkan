@@ -11,10 +11,11 @@
 - [x] **Step 4**: インストーラー生成・自動アップデート（Tauri Updater + GitHub Actions）
 
 ### 対応カテゴリ
-- **画像（内蔵）**: PNG / JPEG / WebP / GIF / BMP / ICO / TIFF
-- **データ・文字コード（内蔵）**: JSON / YAML / TOML / CSV 相互変換、UTF-8 / UTF-8 BOM / Shift_JIS / EUC-JP
-- **動画・音声（FFmpeg）**: MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC / M4A / OGG / Opus
-- **文書（内蔵 + Pandoc）**: PDF → Word (DOCX) / TXT / Markdown / HTML（内蔵）、Markdown → HTML（内蔵）、Markdown / DOCX / EPUB / HTML / RTF / PDF 等（Pandoc）
+- **画像・SVG（内蔵）**: PNG / JPEG / WebP / GIF / BMP / ICO / TIFF / SVG → 各画像形式・PDF（リサイズ・画質設定対応）
+- **Excel・データ・文字コード（内蔵）**: XLSX / XLS / ODS ⇔ CSV / JSON / YAML / TOML、UTF-8 / UTF-8 BOM / Shift_JIS / EUC-JP
+- **PDF・文書（内蔵 + Pandoc）**: PDF → Word (DOCX) / TXT / Markdown / HTML / ページ分割、複数画像・複数 PDF の結合、Markdown → HTML（内蔵）、Markdown / DOCX / EPUB / HTML / RTF / PDF 等（Pandoc）
+- **圧縮ファイル（内蔵）**: ZIP / TAR / TAR.GZ / 7z の相互変換・フォルダ解凍
+- **動画・音声（FFmpeg・アプリ内自動ダウンロード対応）**: MP4 / WebM / MKV / MOV / GIF / MP3 / WAV / FLAC / M4A / OGG / Opus（SNS 向け軽量化プリセット対応）
 
 ## 技術スタック
 
