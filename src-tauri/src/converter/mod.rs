@@ -139,7 +139,10 @@ fn detect_category_and_targets(ext: &str) -> (String, Vec<TargetFormat>) {
     }
     if doc_conv::is_supported_extension(ext) {
         let mut targets = doc_conv::available_targets(ext);
-        if matches!(ext, "md" | "markdown" | "html" | "htm" | "rst" | "tex" | "org") {
+        if matches!(
+            ext,
+            "md" | "markdown" | "html" | "htm" | "rst" | "tex" | "org"
+        ) {
             targets.extend(data_conv::encoding_targets());
         }
         return ("document".to_string(), targets);
@@ -234,9 +237,18 @@ fn calc_path_size(path: &Path) -> u64 {
 }
 
 /// 変換を実行する
+#[cfg(test)]
 pub fn convert_file(
     req: &ConvertRequest,
     app_data_dir: Option<&Path>,
+) -> Result<ConvertResult, ConvertError> {
+    convert_file_with_control(req, app_data_dir, None)
+}
+
+pub fn convert_file_with_control(
+    req: &ConvertRequest,
+    app_data_dir: Option<&Path>,
+    control: Option<&media_conv::ConversionControl>,
 ) -> Result<ConvertResult, ConvertError> {
     let start = Instant::now();
     let input_path = Path::new(&req.input_path);
@@ -291,13 +303,14 @@ pub fn convert_file(
             &req.target_format,
             None,
         )?;
-        media_conv::convert_media(
+        media_conv::convert_media_with_control(
             input_path,
             &out,
             &req.target_format,
             req.ffmpeg_path.as_deref(),
             app_data_dir,
             req.options.as_ref(),
+            control,
         )?;
         out
     } else if excel_conv::is_supported_extension(&input_ext) {

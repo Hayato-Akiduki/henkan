@@ -1,6 +1,53 @@
 use super::tools::{new_hidden_command, resolve_ffmpeg_program};
 use super::{ConvertError, ConvertOptions, TargetFormat};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::process::Stdio;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+pub struct ConversionControl {
+    pub cancelled: Arc<AtomicBool>,
+    pub progress: Box<dyn Fn(f64) + Send + Sync>,
+}
+
+fn duration_seconds(value: &str) -> Option<f64> {
+    let parts: Vec<_> = value.trim().split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some(
+        parts[0].parse::<f64>().ok()? * 3600.0
+            + parts[1].parse::<f64>().ok()? * 60.0
+            + parts[2].parse::<f64>().ok()?,
+    )
+}
+
+fn read_progress(
+    line: String,
+    duration: &mut Option<f64>,
+    tail: &mut std::collections::VecDeque<String>,
+    control: Option<&ConversionControl>,
+) {
+    if let Some(value) = line.trim().strip_prefix("Duration: ") {
+        *duration = duration_seconds(value.split(',').next().unwrap_or(""));
+    }
+    if let (Some(total), Some(value), Some(control)) =
+        (*duration, line.strip_prefix("out_time_us="), control)
+    {
+        if let Ok(micros) = value.parse::<f64>() {
+            if total > 0.0 {
+                (control.progress)((micros / 1_000_000.0 / total * 100.0).clamp(0.0, 99.0));
+            }
+        }
+    }
+    if tail.len() == 4 {
+        tail.pop_front();
+    }
+    tail.push_back(line);
+}
 
 const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mov", "mkv", "avi", "webm", "wmv", "flv", "m4v", "ts", "mts",
@@ -139,6 +186,7 @@ fn include_same_format(mut targets: Vec<TargetFormat>, input_ext: &str) -> Vec<T
     targets
 }
 
+#[cfg(test)]
 pub fn convert_media(
     input_path: &Path,
     output_path: &Path,
@@ -147,10 +195,34 @@ pub fn convert_media(
     app_data_dir: Option<&Path>,
     options: Option<&ConvertOptions>,
 ) -> Result<(), ConvertError> {
+    convert_media_with_control(
+        input_path,
+        output_path,
+        target_format,
+        ffmpeg_path,
+        app_data_dir,
+        options,
+        None,
+    )
+}
+
+pub fn convert_media_with_control(
+    input_path: &Path,
+    output_path: &Path,
+    target_format: &str,
+    ffmpeg_path: Option<&str>,
+    app_data_dir: Option<&Path>,
+    options: Option<&ConvertOptions>,
+    control: Option<&ConversionControl>,
+) -> Result<(), ConvertError> {
+    if control.is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+        return Err(ConvertError::ConversionFailed("キャンセルしました".into()));
+    }
     let program = resolve_ffmpeg_program(ffmpeg_path, app_data_dir);
     let mut cmd = new_hidden_command(&program);
 
-    cmd.arg("-y").arg("-i").arg(input_path);
+    cmd.args(["-nostdin", "-nostats", "-progress", "pipe:2", "-n", "-i"])
+        .arg(input_path);
 
     let preset = options
         .and_then(|o| o.video_preset.as_deref())
@@ -185,7 +257,16 @@ pub fn convert_media(
                 "high" => "24",
                 _ => "32",
             };
-            cmd.args(["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", crf, "-c:a", "libopus"]);
+            cmd.args([
+                "-c:v",
+                "libvpx-vp9",
+                "-b:v",
+                "0",
+                "-crf",
+                crf,
+                "-c:a",
+                "libopus",
+            ]);
             if preset == "compact" {
                 cmd.args(["-vf", "scale=-2:'min(720,ih)'"]);
             }
@@ -220,7 +301,14 @@ pub fn convert_media(
 
     cmd.arg(output_path);
 
-    let output = cmd.output().map_err(|e| {
+    run_ffmpeg(cmd, control)
+}
+
+fn run_ffmpeg(
+    mut cmd: std::process::Command,
+    control: Option<&ConversionControl>,
+) -> Result<(), ConvertError> {
+    let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             ConvertError::ConversionFailed(
                 "FFmpeg が見つかりません。画面上部の「FFmpeg」ボタンから「自動ダウンロード」を実行してください。".to_string(),
@@ -230,10 +318,47 @@ pub fn convert_media(
         }
     })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
-        let detail = tail.into_iter().rev().collect::<Vec<_>>().join(" / ");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut duration = None;
+    let mut tail = std::collections::VecDeque::new();
+    let mut cancelled = false;
+    let status = loop {
+        if control.is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+            cancelled = true;
+            let _ = child.kill();
+            break child.wait()?;
+        }
+        while let Ok(line) = receiver.try_recv() {
+            read_progress(line, &mut duration, &mut tail, control);
+        }
+        if control.is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+            continue;
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    // 終了直前に届いた進捗とエラーも読み取る。
+    let _ = reader.join();
+    for line in receiver.try_iter() {
+        read_progress(line, &mut duration, &mut tail, control);
+    }
+    if cancelled || control.is_some_and(|c| c.cancelled.load(Ordering::SeqCst)) {
+        return Err(ConvertError::ConversionFailed(
+            "キャンセルしました（途中の出力は未完成です）".into(),
+        ));
+    }
+    if !status.success() {
+        let detail = tail.into_iter().collect::<Vec<_>>().join(" / ");
         return Err(ConvertError::ConversionFailed(format!(
             "FFmpeg 変換エラー: {detail}"
         )));
@@ -245,6 +370,39 @@ pub fn convert_media(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_progress_and_pre_cancel() {
+        let values = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = values.clone();
+        let control = ConversionControl {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            progress: Box::new(move |value| captured.lock().unwrap().push(value)),
+        };
+        let mut duration = None;
+        let mut tail = std::collections::VecDeque::new();
+        for line in [
+            "  Duration: 00:02:00.00, start: 0.0",
+            "out_time_us=60000000",
+            "out_time_us=120000000",
+            "out_time_us=N/A",
+        ] {
+            read_progress(line.into(), &mut duration, &mut tail, Some(&control));
+        }
+        assert_eq!(*values.lock().unwrap(), vec![50.0, 99.0]);
+        assert_eq!(duration_seconds("N/A"), None);
+        control.cancelled.store(true, Ordering::SeqCst);
+        let result = convert_media_with_control(
+            Path::new("unused.mp4"),
+            Path::new("unused-output.mp4"),
+            "mp4",
+            None,
+            None,
+            None,
+            Some(&control),
+        );
+        assert!(result.unwrap_err().to_string().contains("キャンセル"));
+    }
 
     #[test]
     fn test_media_extension_detection() {
@@ -306,6 +464,36 @@ mod tests {
             .output()
             .unwrap();
         assert!(generated.status.success(), "テスト用 MP4 生成に失敗");
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let signal = cancelled.clone();
+        let control = ConversionControl {
+            cancelled,
+            progress: Box::new(move |_| signal.store(true, Ordering::SeqCst)),
+        };
+        let stopped = dir.join("cancelled.wav");
+        // 実時間でループ再生し、自然終了ではなく中止で終了することを確認する。
+        let mut command = new_hidden_command("ffmpeg");
+        command
+            .args([
+                "-nostdin",
+                "-nostats",
+                "-progress",
+                "pipe:2",
+                "-n",
+                "-re",
+                "-stream_loop",
+                "-1",
+                "-i",
+            ])
+            .arg(&src_mp4)
+            .args(["-vn", "-c:a", "pcm_s16le"])
+            .arg(&stopped);
+        let started = std::time::Instant::now();
+        let error = run_ffmpeg(command, Some(&control)).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert!(error.to_string().contains("キャンセル"));
+        assert!(control.cancelled.load(Ordering::SeqCst));
 
         // 同形式の再圧縮でも元ファイルを保持し、別名で出力する。
         let original = fs::read(&src_mp4).unwrap();

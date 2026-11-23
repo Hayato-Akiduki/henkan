@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -106,6 +106,22 @@ export function App() {
   const [outputDir, setOutputDir] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
   const [isConvertingAll, setIsConvertingAll] = useState(false);
+  const stopBatch = useRef(false);
+  const [isStoppingBatch, setIsStoppingBatch] = useState(false);
+  const [progressReady, setProgressReady] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    listen<{ taskId: string; percent: number }>("conversion-progress", ({ payload }) => {
+      setItems((prev) => prev.map((item) => item.taskId === payload.taskId && item.status === "converting"
+        ? { ...item, progress: payload.percent } : item));
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else { cleanup = unlisten; setProgressReady(true); }
+    }).catch((err) => setNotice(`進捗表示を準備できませんでした。アプリを再起動してください: ${String(err)}`));
+    return () => { disposed = true; cleanup?.(); };
+  }, []);
   const [batchProgress, setBatchProgress] = useState<{
     current: number;
     total: number;
@@ -509,17 +525,19 @@ export function App() {
 
   const convertSingleItem = async (item: QueueItem) => {
     if (!item.targetFormat) return;
+    const taskId = crypto.randomUUID();
 
     setItems((prev) =>
       prev.map((it) =>
         it.id === item.id
-          ? { ...it, status: "converting", error: undefined }
+          ? { ...it, status: "converting", error: undefined, progress: undefined, taskId }
           : it
       )
     );
 
     try {
       const result = await invoke<ConvertResult>("convert_file", {
+        taskId,
         request: {
           inputPath: item.file.path,
           targetFormat: item.targetFormat,
@@ -543,7 +561,7 @@ export function App() {
       setItems((prev) =>
         prev.map((it) =>
           it.id === item.id
-            ? { ...it, status: "error", error: String(err) }
+            ? { ...it, status: String(err).includes("キャンセルしました") ? "cancelled" : "error", error: String(err) }
             : it
         )
       );
@@ -553,21 +571,30 @@ export function App() {
   const handleConvertAll = async () => {
     const targets = items.filter(
       (it) =>
-        it.targetFormat && (it.status === "idle" || it.status === "error")
+        it.targetFormat && (it.status === "idle" || it.status === "error" || it.status === "cancelled")
     );
     if (targets.length === 0) return;
 
     setIsConvertingAll(true);
+    stopBatch.current = false;
+    setIsStoppingBatch(false);
     setBatchProgress({ current: 0, total: targets.length });
     try {
       for (let i = 0; i < targets.length; i++) {
-        setBatchProgress({ current: i + 1, total: targets.length });
+        if (stopBatch.current) break;
         await convertSingleItem(targets[i]);
+        setBatchProgress({ current: i + 1, total: targets.length });
       }
     } finally {
       setIsConvertingAll(false);
+      setIsStoppingBatch(false);
       setBatchProgress(null);
     }
+  };
+
+  const handleCancelItem = async (taskId: string) => {
+    try { await invoke("cancel_conversion", { taskId }); }
+    catch (err) { setNotice(`中止に失敗しました: ${String(err)}`); }
   };
 
   const handleRevealFile = async (path: string) => {
@@ -595,7 +622,7 @@ export function App() {
   };
 
   const pendingCount = items.filter(
-    (it) => it.targetFormat && (it.status === "idle" || it.status === "error")
+    (it) => it.targetFormat && (it.status === "idle" || it.status === "error" || it.status === "cancelled")
   ).length;
   const doneCount = items.filter((it) => it.status === "done").length;
   const errorCount = items.filter((it) => it.status === "error").length;
@@ -604,7 +631,7 @@ export function App() {
     switch (filterTab) {
       case "pending":
         return items.filter(
-          (it) => it.status === "idle" || it.status === "converting"
+          (it) => it.status === "idle" || it.status === "converting" || it.status === "cancelled"
         );
       case "done":
         return items.filter((it) => it.status === "done");
@@ -1050,7 +1077,7 @@ export function App() {
                 <button
                   className="btn btn-primary btn-convert-all"
                   onClick={handleConvertAll}
-                  disabled={pendingCount === 0 || isConvertingAll}
+                  disabled={pendingCount === 0 || isConvertingAll || !progressReady}
                   type="button"
                 >
                   <PlayIcon size={13} />
@@ -1060,6 +1087,13 @@ export function App() {
                       : `すべて変換 (${pendingCount})`}
                   </span>
                 </button>
+                {isConvertingAll && (
+                  <button className="btn btn-secondary btn-sm" type="button"
+                    disabled={isStoppingBatch}
+                    onClick={() => { stopBatch.current = true; setIsStoppingBatch(true); }}>
+                    {isStoppingBatch ? "現在の処理が終わると停止します" : "このファイルで一括変換を停止"}
+                  </button>
+                )}
               </div>
             </section>
 
@@ -1138,7 +1172,7 @@ export function App() {
               <div className="batch-progress">
                 <div className="batch-progress-label">
                   <span>
-                    変換を実行しています... ({batchProgress.current} /{" "}
+                    処理済み ({batchProgress.current} /{" "}
                     {batchProgress.total})
                   </span>
                   <span>
@@ -1220,7 +1254,7 @@ export function App() {
                       {
                         items.filter(
                           (it) =>
-                            it.status === "idle" || it.status === "converting"
+                            it.status === "idle" || it.status === "converting" || it.status === "cancelled"
                         ).length
                       }
                     </span>
@@ -1306,7 +1340,11 @@ export function App() {
                           {item.status === "converting" && (
                             <div className="item-converting">
                               <span className="mini-spinner" />
-                              <span>変換処理を実行中...</span>
+                              <span>{item.progress == null ? "変換処理を実行中..." : `変換中 ${Math.floor(item.progress)}%`}</span>
+                              {(item.file.category === "video" || item.file.category === "audio") && item.taskId && (
+                                <button className="btn btn-secondary btn-sm" type="button"
+                                  onClick={() => handleCancelItem(item.taskId!)}>中止</button>
+                              )}
                             </div>
                           )}
 
@@ -1338,7 +1376,7 @@ export function App() {
                             </div>
                           )}
 
-                          {item.status === "error" && item.error && (
+                          {(item.status === "error" || item.status === "cancelled") && item.error && (
                             <div className="item-error">
                               <AlertCircleIcon size={14} />
                               <span>{item.error}</span>
@@ -1353,7 +1391,7 @@ export function App() {
                               <select
                                 className="format-select"
                                 value={item.targetFormat}
-                                disabled={item.status === "converting"}
+                                disabled={item.status === "converting" || isConvertingAll}
                                 onChange={(e) =>
                                   handleChangeTarget(item.id, e.target.value)
                                 }
@@ -1369,7 +1407,7 @@ export function App() {
                                 onClick={() => convertSingleItem(item)}
                                 disabled={
                                   item.status === "converting" ||
-                                  isConvertingAll
+                                  isConvertingAll || !progressReady
                                 }
                                 type="button"
                               >
@@ -1387,7 +1425,7 @@ export function App() {
                           <button
                             className="btn-icon-remove"
                             onClick={() => handleRemoveItem(item.id)}
-                            disabled={item.status === "converting"}
+                            disabled={item.status === "converting" || isConvertingAll}
                             title="リストから削除"
                             type="button"
                           >

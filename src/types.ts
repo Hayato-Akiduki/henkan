@@ -55,7 +55,7 @@ export interface DownloadProgressEvent {
   percent: number;
 }
 
-export type ItemStatus = "idle" | "converting" | "done" | "error";
+export type ItemStatus = "idle" | "converting" | "done" | "error" | "cancelled";
 
 export interface QueueItem {
   id: string;
@@ -64,4 +64,6 @@ export interface QueueItem {
   status: ItemStatus;
   result?: ConvertResult;
   error?: string;
+  progress?: number;
+  taskId?: string;
 }
