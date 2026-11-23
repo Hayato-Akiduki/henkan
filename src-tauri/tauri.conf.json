@@ -45,7 +45,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU4NTQwRDBGRkE4NjI2OUMKUldTY0pvYjZEdzFVV0RWWnVIQUdDdWdhelFnOE1mVEFnNFZpcWFxdTQxaHVQQkdkbGMyTjZqWUsK",
       "endpoints": [
-        "https://github.com/OWNER/henkan/releases/latest/download/latest.json"
+        "https://github.com/Hayato-Akiduki/henkan/releases/latest/download/latest.json"
       ]
     }
   }

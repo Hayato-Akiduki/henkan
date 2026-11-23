@@ -3,6 +3,11 @@
 様々な形式のファイルを変換できるクロスプラットフォーム・デスクトップアプリ（Windows / macOS / Linux 対応）です。  
 **Rust + Tauri v2 + React + TypeScript** で構築しています。
 
+## インストール
+
+[GitHub Releases](https://github.com/Hayato-Akiduki/henkan/releases/latest) から、お使いのOS向けのインストーラーをダウンロードしてください。
+Windowsは `x64-setup.exe` または `.msi`、macOSはCPUに合った `.dmg`、Linuxは `.AppImage` または `.deb` を使用します。
+
 ## 主な機能
 
 - [x] **Step 1**: Tauri v2 プロジェクトの初期構築
@@ -72,7 +77,7 @@ pnpm tauri build
    ```
    - 表示された **公開鍵（`.pub` の中身）** を `src-tauri/tauri.conf.json` の `plugins.updater.pubkey` に貼り付けます。
 2. **更新チェック先 URL を設定する**
-   - `src-tauri/tauri.conf.json` の `plugins.updater.endpoints` にある `OWNER/henkan` をご自身の GitHub ユーザー名／リポジトリ名に変更します。
+   - `src-tauri/tauri.conf.json` の `plugins.updater.endpoints` は `Hayato-Akiduki/henkan` の最新リリースを参照します。
 3. **GitHub Secrets を登録する**
    - GitHub リポジトリの `Settings > Secrets and variables > Actions` に以下を登録します：
      - `TAURI_SIGNING_PRIVATE_KEY`: `~/.tauri/henkan.key` の中身
@@ -83,4 +88,4 @@ pnpm tauri build
    git push origin v0.1.0
    ```
    - `.github/workflows/release.yml` が自動で Windows / macOS / Linux 向けインストーラーと `latest.json` をビルドし、GitHub Releases にドラフト作成します。
-   - Releases 画面で内容を確認して「Publish release」を押すと、インストール済みアプリから自動アップデートできるようになります。
+   - すべてのOSのテストとビルドが成功した後に自動公開します。失敗した場合はドラフトのまま残ります。

@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Release signing keys and credentials
+.env
+.env.*
+*.key
+*.pem
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
