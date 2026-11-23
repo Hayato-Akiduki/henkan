@@ -78,7 +78,7 @@ pub fn video_targets(input_ext: &str) -> Vec<TargetFormat> {
         },
     ];
 
-    all.into_iter().filter(|t| t.id != input_ext).collect()
+    include_same_format(all, input_ext)
 }
 
 pub fn audio_targets(input_ext: &str) -> Vec<TargetFormat> {
@@ -127,7 +127,16 @@ pub fn audio_targets(input_ext: &str) -> Vec<TargetFormat> {
         },
     ];
 
-    all.into_iter().filter(|t| t.id != input_ext).collect()
+    include_same_format(all, input_ext)
+}
+
+fn include_same_format(mut targets: Vec<TargetFormat>, input_ext: &str) -> Vec<TargetFormat> {
+    for target in &mut targets {
+        if target.id == input_ext {
+            target.description = "同じ形式で再変換（FFmpeg）".to_string();
+        }
+    }
+    targets
 }
 
 pub fn convert_media(
@@ -248,9 +257,15 @@ mod tests {
         assert!(!is_audio_extension("mp4"));
 
         let mp4_targets = video_targets("mp4");
-        assert!(!mp4_targets.iter().any(|t| t.id == "mp4"));
+        assert!(mp4_targets.iter().any(|t| t.id == "mp4"));
         assert!(mp4_targets.iter().any(|t| t.id == "mp3"));
         assert!(mp4_targets.iter().any(|t| t.id == "gif"));
+        for ext in ["mp4", "webm", "mkv", "mov"] {
+            assert!(video_targets(ext).iter().any(|t| t.id == ext));
+        }
+        for ext in ["mp3", "wav", "flac", "m4a", "ogg", "opus"] {
+            assert!(audio_targets(ext).iter().any(|t| t.id == ext));
+        }
     }
 
     #[test]
@@ -291,6 +306,24 @@ mod tests {
             .output()
             .unwrap();
         assert!(generated.status.success(), "テスト用 MP4 生成に失敗");
+
+        // 同形式の再圧縮でも元ファイルを保持し、別名で出力する。
+        let original = fs::read(&src_mp4).unwrap();
+        let request = super::super::ConvertRequest {
+            input_path: src_mp4.to_string_lossy().to_string(),
+            target_format: "mp4".to_string(),
+            output_dir: None,
+            ffmpeg_path: None,
+            pandoc_path: None,
+            options: Some(ConvertOptions {
+                video_preset: Some("compact".to_string()),
+                ..Default::default()
+            }),
+        };
+        let result = super::super::convert_file(&request, None).unwrap();
+        assert_ne!(Path::new(&result.output_path), src_mp4.as_path());
+        assert!(result.output_size > 0);
+        assert_eq!(fs::read(&src_mp4).unwrap(), original);
 
         convert_media(&src_mp4, &dst_gif, "gif", None, None, None).unwrap();
         assert!(dst_gif.exists() && fs::metadata(&dst_gif).unwrap().len() > 0);

@@ -1126,6 +1126,9 @@ export function App() {
                     <option value="compact">SNS向け軽量化（最大720p）</option>
                     <option value="high">高画質</option>
                   </select>
+                  <small>
+                    同じ動画形式を選んでも軽量化できます。容量は元の動画によって増える場合があります。
+                  </small>
                 </div>
               </section>
             )}
