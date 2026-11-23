@@ -196,6 +196,7 @@ mod tests {
             image_quality: Some(75),
             image_max_width: Some(200),
             video_preset: None,
+            excel_sheet: None,
         };
         convert_image(&src, &dst_jpg, "jpg", Some(&opts)).unwrap();
         let loaded_jpg = image::open(&dst_jpg).unwrap();

@@ -33,11 +33,17 @@ fn cancel_conversion(
 }
 
 #[tauri::command]
-fn inspect_files(paths: Vec<String>) -> Vec<Result<FileInspectResult, String>> {
-    paths
-        .iter()
-        .map(|p| converter::inspect_file(p).map_err(|e| e.to_string()))
-        .collect()
+async fn inspect_files(
+    paths: Vec<String>,
+) -> Result<Vec<Result<FileInspectResult, String>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .iter()
+            .map(|p| converter::inspect_file(p).map_err(|e| e.to_string()))
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("ファイルの確認に失敗しました: {e}"))
 }
 
 #[tauri::command]

@@ -978,6 +978,24 @@ body,
   color: var(--danger);
 }
 
+.merge-panel {
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.merge-panel h2 { margin: 0; font-size: 16px; }
+.merge-panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.merge-list { padding: 0; list-style: none; }
+.merge-list li, .merge-actions { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.merge-file { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.merge-file span { overflow-wrap: anywhere; }
+.sheet-controls { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.sheet-controls small { max-width: 220px; color: var(--text-muted); }
+.item-controls { flex-wrap: wrap; }
+
 /* アニメーション */
 @keyframes spin {
   to {

@@ -23,6 +23,7 @@ export interface FileInspectResult {
     | "unsupported"
     | string;
   availableTargets: TargetFormat[];
+  sheetNames: string[];
 }
 
 export interface ConvertOptions {
@@ -66,4 +67,5 @@ export interface QueueItem {
   error?: string;
   progress?: number;
   taskId?: string;
+  selectedSheet?: string;
 }

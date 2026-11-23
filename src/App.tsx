@@ -30,6 +30,7 @@ import type {
   ToolsOverview,
 } from "./types";
 import "./App.css";
+import { readSettings, saveSettings } from "./settings";
 
 const STORAGE_FFMPEG_PATH = "henkan.ffmpegPath";
 const STORAGE_PANDOC_PATH = "henkan.pandocPath";
@@ -103,7 +104,8 @@ export function App() {
 
   const [items, setItems] = useState<QueueItem[]>([]);
   const [filterTab, setFilterTab] = useState<FilterTab>("all");
-  const [outputDir, setOutputDir] = useState<string>("");
+  const [savedSettings] = useState(() => readSettings(localStorage));
+  const [outputDir, setOutputDir] = useState(savedSettings.outputDir);
   const [isDragging, setIsDragging] = useState(false);
   const [isConvertingAll, setIsConvertingAll] = useState(false);
   const stopBatch = useRef(false);
@@ -129,14 +131,21 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [mergeResult, setMergeResult] = useState<ConvertResult | null>(null);
   const [isMergingPdf, setIsMergingPdf] = useState(false);
+  const [showMergePanel, setShowMergePanel] = useState(false);
+  const [mergeKind, setMergeKind] = useState<"pdf" | "image">("pdf");
+  const [mergeEntries, setMergeEntries] = useState<Array<{ id: string; selected: boolean }>>([]);
 
   // 変換オプション
   const [showOptions, setShowOptions] = useState(false);
-  const [options, setOptions] = useState<ConvertOptions>({
-    imageQuality: 85,
-    imageMaxWidth: null,
-    videoPreset: "default",
-  });
+  const [options, setOptions] = useState<ConvertOptions>(savedSettings.options);
+
+  useEffect(() => {
+    try {
+      saveSettings(localStorage, outputDir, options);
+    } catch {
+      setNotice("設定を保存できませんでした。今回の操作は続けられますが、再起動後には復元されません。");
+    }
+  }, [outputDir, options]);
 
   // 外部ツール設定 + FFmpeg 自動ダウンロード
   const [showToolsPanel, setShowToolsPanel] = useState(false);
@@ -463,33 +472,42 @@ export function App() {
       }));
   }, [items]);
 
-  // 複数画像 または 複数 PDF を 1 冊の PDF に結合できるか判定
-  const mergeablePdfInfo = useMemo(() => {
-    const pdfs = items.filter((it) => it.file.extension === "pdf");
-    if (pdfs.length >= 2) {
-      return { kind: "pdf" as const, paths: pdfs.map((i) => i.file.path) };
-    }
-    const rasterImages = items.filter(
-      (it) => it.file.category === "image" && it.file.extension !== "svg"
-    );
-    if (rasterImages.length >= 2) {
-      return {
-        kind: "image" as const,
-        paths: rasterImages.map((i) => i.file.path),
-      };
-    }
-    return null;
-  }, [items]);
+  const mergeCandidates = useMemo(() => ({
+    pdf: items.filter((item) => item.file.extension === "pdf"),
+    image: items.filter((item) => item.file.category === "image" && item.file.extension !== "svg"),
+  }), [items]);
+  const canMerge = mergeCandidates.pdf.length >= 2 || mergeCandidates.image.length >= 2;
+  const mergeRows = mergeEntries.flatMap((entry) => {
+    const item = mergeCandidates[mergeKind].find((candidate) => candidate.id === entry.id);
+    return item ? [{ ...entry, item }] : [];
+  });
+  const selectedMergePaths = mergeRows.filter((row) => row.selected).map((row) => row.item.file.path);
+
+  const selectMergeKind = (kind: "pdf" | "image") => {
+    setMergeKind(kind);
+    setMergeEntries(mergeCandidates[kind].map((item) => ({ id: item.id, selected: true })));
+  };
+
+  const moveMergeEntry = (id: string, direction: -1 | 1) => {
+    setMergeEntries((prev) => {
+      const next = prev.filter((entry) => mergeCandidates[mergeKind].some((item) => item.id === entry.id));
+      const index = next.findIndex((entry) => entry.id === id);
+      const destination = index + direction;
+      if (index < 0 || destination < 0 || destination >= next.length) return prev;
+      [next[index], next[destination]] = [next[destination], next[index]];
+      return next;
+    });
+  };
 
   const handleMergeToPdf = async () => {
-    if (!mergeablePdfInfo) return;
+    if (selectedMergePaths.length < 2 || isMergingPdf) return;
     setIsMergingPdf(true);
     setNotice(null);
     setMergeResult(null);
     try {
       const res = await invoke<ConvertResult>("merge_to_pdf", {
         request: {
-          inputPaths: mergeablePdfInfo.paths,
+          inputPaths: selectedMergePaths,
           outputDir: outputDir || null,
           imageQuality: options.imageQuality,
         },
@@ -548,6 +566,7 @@ export function App() {
             imageQuality: options.imageQuality,
             imageMaxWidth: options.imageMaxWidth,
             videoPreset: options.videoPreset,
+            excelSheet: item.selectedSheet ?? item.file.sheetNames?.[0] ?? null,
           },
         },
       });
@@ -1059,18 +1078,17 @@ export function App() {
                   画質・サイズ設定
                 </button>
 
-                {mergeablePdfInfo && (
+                {canMerge && (
                   <button
                     className="btn btn-secondary btn-sm"
-                    onClick={handleMergeToPdf}
+                    onClick={() => {
+                      selectMergeKind(mergeCandidates.pdf.length >= 2 ? "pdf" : "image");
+                      setShowMergePanel(true);
+                    }}
                     disabled={isMergingPdf || isConvertingAll}
                     type="button"
                   >
-                    {isMergingPdf
-                      ? "結合中..."
-                      : mergeablePdfInfo.kind === "pdf"
-                      ? `PDF を結合 (${mergeablePdfInfo.paths.length})`
-                      : `画像を1冊のPDFへ (${mergeablePdfInfo.paths.length})`}
+                    PDF結合の対象・順序を選ぶ
                   </button>
                 )}
 
@@ -1096,6 +1114,51 @@ export function App() {
                 )}
               </div>
             </section>
+
+            {showMergePanel && (
+              <section className="merge-panel" aria-label="PDF結合の設定">
+                <h2>PDF結合の対象・順序</h2>
+                <p className="muted-icon">チェックしたファイルを上から順に結合します。</p>
+                <fieldset disabled={isMergingPdf || isConvertingAll}>
+                  <label>
+                    結合する種類{" "}
+                    <select className="format-select" value={mergeKind}
+                      onChange={(event) => selectMergeKind(event.target.value as "pdf" | "image")}>
+                      <option value="pdf">PDF</option>
+                      <option value="image">画像（SVGを除く）</option>
+                    </select>
+                  </label>
+                  <ol className="merge-list">
+                    {mergeRows.map((row, index) => (
+                      <li key={row.id}>
+                        <label className="merge-file" title={row.item.file.path}>
+                          <input type="checkbox" checked={row.selected}
+                            onChange={(event) => setMergeEntries((prev) => prev.map((entry) =>
+                              entry.id === row.id ? { ...entry, selected: event.target.checked } : entry))} />
+                          <span>{row.item.file.fileName}</span>
+                        </label>
+                        <button className="btn btn-secondary btn-sm" type="button"
+                          aria-label={`${row.item.file.fileName}を上へ`} disabled={index === 0}
+                          onClick={() => moveMergeEntry(row.id, -1)}>↑</button>
+                        <button className="btn btn-secondary btn-sm" type="button"
+                          aria-label={`${row.item.file.fileName}を下へ`} disabled={index === mergeRows.length - 1}
+                          onClick={() => moveMergeEntry(row.id, 1)}>↓</button>
+                      </li>
+                    ))}
+                  </ol>
+                  {mergeRows.length === 0 && <p>この種類のファイルがありません。</p>}
+                  <div className="merge-actions">
+                    <button className="btn btn-primary btn-sm" type="button"
+                      disabled={selectedMergePaths.length < 2} onClick={handleMergeToPdf}>
+                      {isMergingPdf ? "結合中..." : `選択した${selectedMergePaths.length}件を結合`}
+                    </button>
+                    <button className="btn btn-secondary btn-sm" type="button"
+                      onClick={() => setShowMergePanel(false)}>閉じる</button>
+                  </div>
+                  <small>2件以上選択してください。PDFと画像は種類ごとに結合します。</small>
+                </fieldset>
+              </section>
+            )}
 
             {/* 変換オプションパネル（画像画質・リサイズ・動画プリセット） */}
             {showOptions && (
@@ -1385,6 +1448,19 @@ export function App() {
                         </div>
 
                         <div className="item-controls">
+                          {item.file.category === "excel" && (
+                            <div className="sheet-controls">
+                              <label htmlFor={`sheet-${item.id}`}>書き出すシート</label>
+                              <select id={`sheet-${item.id}`} className="format-select"
+                                value={item.selectedSheet ?? item.file.sheetNames?.[0] ?? ""}
+                                disabled={item.status === "converting" || isConvertingAll}
+                                onChange={(event) => setItems((prev) => prev.map((entry) =>
+                                  entry.id === item.id ? { ...entry, selectedSheet: event.target.value, status: "idle", error: undefined } : entry))}>
+                                {item.file.sheetNames?.map((sheet) => <option key={sheet} value={sheet}>{sheet}</option>)}
+                              </select>
+                              <small>値のみ出力（数式・書式は保持しません）</small>
+                            </div>
+                          )}
                           {item.file.availableTargets.length > 0 ? (
                             <>
                               <ArrowRightIcon size={15} className="arrow" />

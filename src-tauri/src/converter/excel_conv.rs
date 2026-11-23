@@ -1,5 +1,5 @@
 use super::{ConvertError, TargetFormat};
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{Data, Reader, open_workbook_auto};
 use rust_xlsxwriter::Workbook;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ pub fn available_targets() -> Vec<TargetFormat> {
             label: "CSV".to_string(),
             extension: "csv".to_string(),
             category: "data".to_string(),
-            description: "先頭シートを CSV に変換（内蔵）".to_string(),
+            description: "選択したシートの値を CSV に変換（内蔵）".to_string(),
         },
         TargetFormat {
             id: "json".to_string(),
@@ -57,17 +57,30 @@ fn cell_to_string(cell: &Data) -> String {
     }
 }
 
-fn read_first_sheet_rows(input_path: &Path) -> Result<Vec<Vec<String>>, ConvertError> {
-    let mut workbook = open_workbook_auto(input_path)
-        .map_err(|e| ConvertError::ConversionFailed(format!("Excel ファイルの読み込みに失敗: {e}")))?;
+pub fn sheet_names(input_path: &Path) -> Result<Vec<String>, ConvertError> {
+    let workbook = open_workbook_auto(input_path).map_err(|e| {
+        ConvertError::ConversionFailed(format!("Excel ファイルの読み込みに失敗: {e}"))
+    })?;
+    Ok(workbook.sheet_names().to_vec())
+}
 
-    let sheet_names = workbook.sheet_names().to_vec();
-    let first_sheet = sheet_names.first().ok_or_else(|| {
-        ConvertError::ConversionFailed("ワークシートが見つかりませんでした".to_string())
+fn read_sheet_rows(
+    input_path: &Path,
+    selected_sheet: Option<&str>,
+) -> Result<Vec<Vec<String>>, ConvertError> {
+    let mut workbook = open_workbook_auto(input_path).map_err(|e| {
+        ConvertError::ConversionFailed(format!("Excel ファイルの読み込みに失敗: {e}"))
     })?;
 
+    let sheet_names = workbook.sheet_names().to_vec();
+    let sheet = selected_sheet
+        .or_else(|| sheet_names.first().map(String::as_str))
+        .ok_or_else(|| {
+            ConvertError::ConversionFailed("ワークシートが見つかりませんでした".to_string())
+        })?;
+
     let range = workbook
-        .worksheet_range(first_sheet)
+        .worksheet_range(sheet)
         .map_err(|e| ConvertError::ConversionFailed(format!("シートの読み込みに失敗: {e}")))?;
 
     let rows: Vec<Vec<String>> = range
@@ -82,8 +95,9 @@ pub fn convert_excel(
     input_path: &Path,
     output_path: &Path,
     target_format: &str,
+    selected_sheet: Option<&str>,
 ) -> Result<(), ConvertError> {
-    let rows = read_first_sheet_rows(input_path)?;
+    let rows = read_sheet_rows(input_path, selected_sheet)?;
 
     match target_format {
         "csv" => {
@@ -154,7 +168,7 @@ pub fn write_json_value_as_xlsx(value: &Value, output_path: &Path) -> Result<(),
             return Err(ConvertError::ConversionFailed(
                 "Excel (.xlsx) へ変換できるのはオブジェクトまたはオブジェクトの配列のみです"
                     .to_string(),
-            ))
+            ));
         }
     };
 
@@ -229,6 +243,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_selected_sheet_is_used_and_missing_sheet_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "henkan_test_sheet_selection_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("sheets.xlsx");
+        let output = dir.join("selected.csv");
+        let mut workbook = Workbook::new();
+        workbook
+            .add_worksheet()
+            .set_name("先頭")
+            .unwrap()
+            .write_string(0, 0, "first")
+            .unwrap();
+        workbook
+            .add_worksheet()
+            .set_name("売上")
+            .unwrap()
+            .write_string(0, 0, "selected")
+            .unwrap();
+        workbook.save(&input).unwrap();
+        assert_eq!(sheet_names(&input).unwrap(), vec!["先頭", "売上"]);
+        let inspected = super::super::inspect_file(input.to_str().unwrap()).unwrap();
+        assert_eq!(inspected.sheet_names, vec!["先頭", "売上"]);
+        let request = super::super::ConvertRequest {
+            input_path: input.to_string_lossy().into_owned(),
+            target_format: "csv".into(),
+            output_dir: None,
+            ffmpeg_path: None,
+            pandoc_path: None,
+            options: Some(super::super::ConvertOptions {
+                excel_sheet: Some("売上".into()),
+                ..Default::default()
+            }),
+        };
+        let converted = super::super::convert_file(&request, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(converted.output_path).unwrap().trim(),
+            "selected"
+        );
+        assert!(convert_excel(&input, &output, "csv", Some("削除済み")).is_err());
+        assert!(!output.exists());
+        convert_excel(&input, &output, "csv", None).unwrap();
+        assert_eq!(fs::read_to_string(output).unwrap().trim(), "first");
+    }
+
+    #[test]
     fn test_json_to_xlsx_and_back_to_csv_and_json() {
         let dir = std::env::temp_dir().join("henkan_test_excel");
         let _ = fs::create_dir_all(&dir);
@@ -243,12 +308,12 @@ mod tests {
         write_json_value_as_xlsx(&data, &xlsx).unwrap();
         assert!(xlsx.exists());
 
-        convert_excel(&xlsx, &csv_out, "csv").unwrap();
+        convert_excel(&xlsx, &csv_out, "csv", None).unwrap();
         let csv_text = fs::read_to_string(&csv_out).unwrap();
         assert!(csv_text.contains("Taro"));
         assert!(csv_text.contains("95"));
 
-        convert_excel(&xlsx, &json_out, "json").unwrap();
+        convert_excel(&xlsx, &json_out, "json", None).unwrap();
         let json_text = fs::read_to_string(&json_out).unwrap();
         assert!(json_text.contains("Hanako"));
 

@@ -47,6 +47,7 @@ pub struct FileInspectResult {
     pub size: u64,
     pub category: String,
     pub available_targets: Vec<TargetFormat>,
+    pub sheet_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -55,6 +56,7 @@ pub struct ConvertOptions {
     pub image_quality: Option<u8>,
     pub image_max_width: Option<u32>,
     pub video_preset: Option<String>,
+    pub excel_sheet: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +106,11 @@ pub fn inspect_file(path_str: &str) -> Result<FileInspectResult, ConvertError> {
         .unwrap_or_default();
 
     let (category, available_targets) = detect_category_and_targets(&ext);
+    let sheet_names = if category == "excel" {
+        excel_conv::sheet_names(path)?
+    } else {
+        Vec::new()
+    };
 
     Ok(FileInspectResult {
         path: path_str.to_string(),
@@ -112,6 +119,7 @@ pub fn inspect_file(path_str: &str) -> Result<FileInspectResult, ConvertError> {
         size: metadata.len(),
         category,
         available_targets,
+        sheet_names,
     })
 }
 
@@ -320,7 +328,12 @@ pub fn convert_file_with_control(
             &req.target_format,
             None,
         )?;
-        excel_conv::convert_excel(input_path, &out, &req.target_format)?;
+        excel_conv::convert_excel(
+            input_path,
+            &out,
+            &req.target_format,
+            req.options.as_ref().and_then(|o| o.excel_sheet.as_deref()),
+        )?;
         out
     } else if archive_conv::is_supported_extension(&input_ext) {
         let out = if req.target_format == "extract" {

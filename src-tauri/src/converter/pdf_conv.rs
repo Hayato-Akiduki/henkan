@@ -1,9 +1,9 @@
 use super::image_conv;
 use super::{ConvertError, TargetFormat};
 use docx_rs::{Docx, Paragraph, Run};
-use image::codecs::jpeg::JpegEncoder;
 use image::DynamicImage;
-use lopdf::{dictionary, Document, Object, ObjectId, Stream};
+use image::codecs::jpeg::JpegEncoder;
+use lopdf::{Document, Object, ObjectId, Stream, dictionary};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
@@ -180,8 +180,9 @@ pub fn images_to_pdf(
 
 /// PDF を 1 ページずつ個別の PDF ファイルに分割して出力フォルダへ保存する
 pub fn split_pdf_pages(input_path: &Path, output_dir: &Path) -> Result<(), ConvertError> {
-    let source = Document::load(input_path)
-        .map_err(|e| ConvertError::ConversionFailed(format!("PDF の読み込みに失敗しました: {e}")))?;
+    let source = Document::load(input_path).map_err(|e| {
+        ConvertError::ConversionFailed(format!("PDF の読み込みに失敗しました: {e}"))
+    })?;
     let total_pages = source.get_pages().len() as u32;
     if total_pages == 0 {
         return Err(ConvertError::ConversionFailed(
@@ -216,7 +217,8 @@ pub fn merge_pdfs(input_paths: &[PathBuf], output_path: &Path) -> Result<(), Con
     }
 
     let mut max_id = 1u32;
-    let mut documents_pages: BTreeMap<ObjectId, Object> = BTreeMap::new();
+    // オブジェクトIDではなく、入力順と各PDFのページツリーの順序を保持する。
+    let mut documents_pages: Vec<(ObjectId, Object)> = Vec::new();
     let mut documents_objects: BTreeMap<ObjectId, Object> = BTreeMap::new();
     let mut merged = Document::with_version("1.5");
 
@@ -232,7 +234,7 @@ pub fn merge_pdfs(input_paths: &[PathBuf], output_path: &Path) -> Result<(), Con
 
         for (_, object_id) in doc.get_pages() {
             if let Ok(obj) = doc.get_object(object_id) {
-                documents_pages.insert(object_id, obj.to_owned());
+                documents_pages.push((object_id, obj.to_owned()));
             }
         }
         documents_objects.extend(doc.objects);
@@ -301,8 +303,8 @@ pub fn merge_pdfs(input_paths: &[PathBuf], output_path: &Path) -> Result<(), Con
         dictionary.set(
             "Kids",
             documents_pages
-                .keys()
-                .map(|&id| Object::Reference(id))
+                .iter()
+                .map(|(id, _)| Object::Reference(*id))
                 .collect::<Vec<_>>(),
         );
         merged
@@ -324,9 +326,9 @@ pub fn merge_pdfs(input_paths: &[PathBuf], output_path: &Path) -> Result<(), Con
     merged.renumber_objects();
     merged.compress();
 
-    merged
-        .save(output_path)
-        .map_err(|e| ConvertError::ConversionFailed(format!("結合 PDF の保存に失敗しました: {e}")))?;
+    merged.save(output_path).map_err(|e| {
+        ConvertError::ConversionFailed(format!("結合 PDF の保存に失敗しました: {e}"))
+    })?;
 
     Ok(())
 }
@@ -453,6 +455,84 @@ mod tests {
             .as_bytes(),
         );
         pdf
+    }
+
+    #[test]
+    fn test_merge_preserves_input_and_internal_page_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "henkan_test_pdf_order_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut source = Document::load_mem(&build_minimal_pdf()).unwrap();
+        let first_id = source.get_pages()[&1];
+        let parent = source
+            .get_object(first_id)
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .get(b"Parent")
+            .unwrap()
+            .as_reference()
+            .unwrap();
+        let mut second_page = source.get_object(first_id).unwrap().clone();
+        second_page
+            .as_dict_mut()
+            .unwrap()
+            .set("HenkanMarker", Object::Integer(2));
+        source
+            .get_object_mut(first_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("HenkanMarker", Object::Integer(1));
+        let second_id = source.add_object(second_page);
+        let pages = source
+            .get_object_mut(parent)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap();
+        pages.set(
+            "Kids",
+            vec![Object::Reference(second_id), Object::Reference(first_id)],
+        );
+        pages.set("Count", 2);
+        let source_path = dir.join("source.pdf");
+        source.save(&source_path).unwrap();
+
+        let mut other = Document::load_mem(&build_minimal_pdf()).unwrap();
+        let id = other.get_pages()[&1];
+        other
+            .get_object_mut(id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .set("HenkanMarker", Object::Integer(3));
+        let other_path = dir.join("other.pdf");
+        other.save(&other_path).unwrap();
+        // 先頭にother、次にsource。source内は大きなIDのページが先になる。
+        let output = dir.join("ordered.pdf");
+        merge_pdfs(&[other_path, source_path], &output).unwrap();
+        let merged = Document::load(output).unwrap();
+        let markers: Vec<i64> = merged
+            .get_pages()
+            .values()
+            .map(|id| {
+                merged
+                    .get_object(*id)
+                    .unwrap()
+                    .as_dict()
+                    .unwrap()
+                    .get(b"HenkanMarker")
+                    .unwrap()
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(markers, vec![3, 2, 1]);
     }
 
     #[test]
