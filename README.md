@@ -19,6 +19,11 @@
 
 ## 技術スタック
 
+### 変換キューの操作
+
+- 個別変換中の「処理中以外をクリア」は、処理中の項目を残します。変換後の結果やエラーは引き続き確認できます。
+- 一括変換中は、キューのクリア操作を無効にします。
+
 - **デスクトップ基盤**: Tauri v2 (Rust)
 - **フロントエンド**: React 19 + TypeScript + Vite
 - **自動アップデート**: `tauri-plugin-updater` + `tauri-plugin-process` + GitHub Releases

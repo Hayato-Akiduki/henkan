@@ -587,7 +587,8 @@ export function App() {
   };
 
   const handleClearAll = () => {
-    setItems([]);
+    // 実行中の項目は、完了後の結果を確認できるように残す。
+    setItems((prev) => prev.filter((item) => item.status === "converting"));
     setNotice(null);
     setMergeResult(null);
     setFilterTab("all");
@@ -1258,7 +1259,9 @@ export function App() {
                     disabled={isConvertingAll}
                     type="button"
                   >
-                    すべてクリア
+                    {items.some((item) => item.status === "converting")
+                      ? "処理中以外をクリア"
+                      : "すべてクリア"}
                   </button>
                 </div>
               </div>
